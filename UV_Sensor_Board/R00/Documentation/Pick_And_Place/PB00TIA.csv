@@ -1,0 +1,91 @@
+Altium Designer Pick and Place Locations
+C:\Users\kstepancic\Documents\Altium\Documentation\Pick_And_Place\PB00TIA.csv
+
+========================================================================================================================
+File Design Information:
+
+Date:       01/07/25
+Time:       18:22
+Revision:   Not in VersionControl
+Variant:    No variations
+Units used: mm
+
+"Designator","Comment","Layer","Footprint","Center-X(mm)","Center-Y(mm)","Rotation","Description"
+"TP6","61300211121","TopLayer","HDRV2W110P0X254_1X2_508X254X854P","64.3000","36.2700","270","Connector"
+"C13:2","0.1u","BottomLayer","CAPC2012X14M","47.3000","26.6000","90","C0805C104K5RACTU, Multilayer Ceramic Capacitors MLCC - SMD/SMT 50V 0.1uF X7R 0805 10%"
+"C13:1","0.1u","BottomLayer","CAPC2012X14M","47.3000","22.2000","270","C0805C104K5RACTU, Multilayer Ceramic Capacitors MLCC - SMD/SMT 50V 0.1uF X7R 0805 10%"
+"C2","1u","BottomLayer","CAPC2012X14M","75.5000","33.4000","90","C0805C105K5RACTU, Multilayer Ceramic Capacitors MLCC - SMD/SMT 50V 1uF X7R 0805 10%"
+"A1","LP5907MFX-3.3/NOPB","BottomLayer","SOT95P280X145-5M","77.0000","29.0000","180","LDO Voltage Regulators 250mA Ultra-Lo Noise LDO Reg"
+"R7:2","RES_4K7_0805_1%","BottomLayer","RESC2112X05M","33.7000","38.5000","180","Resistor, Thick Film, 4K7, 1%, 0.125W, TK100, Vishay"
+"R7:1","RES_4K7_0805_1%","BottomLayer","RESC2112X05M","33.7000","14.6000","180","Resistor, Thick Film, 4K7, 1%, 0.125W, TK100, Vishay"
+"TP5","61300211121","TopLayer","HDRV2W110P0X254_1X2_508X254X854P","47.3000","35.8700","270","Connector"
+"TP1","61300211121","TopLayer","HDRV2W110P0X254_1X2_508X254X854P","29.8000","11.1300","90","Connector"
+"TP2","61300211121","TopLayer","HDRV2W110P0X254_1X2_508X254X854P","32.7000","18.6700","90","Connector"
+"TP3","61300211121","TopLayer","HDRV2W110P0X254_1X2_508X254X854P","29.8000","35.1300","90","Connector"
+"TP4","61300211121","TopLayer","HDRV2W110P0X254_1X2_508X254X854P","32.7000","42.5700","270","Connector"
+"R4","10K","BottomLayer","RESC2112X05M","60.0000","32.4000","0","CRCW080510K0FKEA, Thick Film Resistors 1/8watt 10Kohms 1% 100ppm"
+"J5","61300211121","TopLayer","HDRV2W110P0X254_1X2_508X254X854P","83.7300","22.3000","0","Connector"
+"J4","61300211121","TopLayer","HDRV2W110P0X254_1X2_508X254X854P","83.7300","19.7400","0","Connector"
+"J3","61300211121","TopLayer","HDRV2W110P0X254_1X2_508X254X854P","83.7300","24.8200","0","Connector"
+"C4","TC_LESR_10u_35V_20%","BottomLayer","CAPMP7343X31M","82.7000","35.6000","90","Capacitor, Tantalum, 10uF, 35V, 20%, Low ESR, 250m?, Kemet"
+"C3","1u","BottomLayer","CAPC2012X14M","78.5000","33.4000","90","C0805C105K5RACTU, Multilayer Ceramic Capacitors MLCC - SMD/SMT 50V 1uF X7R 0805 10%"
+"C11:1","0.1n","BottomLayer","CAPC2012X14M","16.3000","12.7000","90","C0805C101J5GAC3123, 
+Multilayer Ceramic Capacitors MLCC - SMD/SMT 50V 100pF C0G 0805 5%"
+"C11:2","0.1n","BottomLayer","CAPC2012X14M","16.3000","36.7000","90","C0805C101J5GAC3123, 
+Multilayer Ceramic Capacitors MLCC - SMD/SMT 50V 100pF C0G 0805 5%"
+"R11:1","0R","BottomLayer","RESC2112X05M","22.2000","19.5500","180","0R"
+"R11:2","0R","BottomLayer","RESC2112X05M","22.2000","43.5500","180","0R"
+"R6:1","20M","BottomLayer","RESC3216X76N","18.9000","13.2000","90","CRHV1206AF20M0FKFT
+Thick Film Resistors 20Mohms 1% 100ppm 0.3watt 3-side term"
+"R6:2","20M","BottomLayer","RESC3216X76N","18.9000","37.2000","90","CRHV1206AF20M0FKFT
+Thick Film Resistors 20Mohms 1% 100ppm 0.3watt 3-side term"
+"C15:1","0.1u","BottomLayer","CAPC2012X14M","24.6000","8.4000","0","C0805C104K5RACTU, Multilayer Ceramic Capacitors MLCC - SMD/SMT 50V 0.1uF X7R 0805 10%"
+"C15:2","0.1u","BottomLayer","CAPC2012X14M","24.6000","32.2000","0","C0805C104K5RACTU, Multilayer Ceramic Capacitors MLCC - SMD/SMT 50V 0.1uF X7R 0805 10%"
+"C14:1","10n","BottomLayer","CAPC2012X14M","29.8000","16.1000","90","C0805H103K5GACTU, 
+Multilayer Ceramic Capacitors MLCC - SMD/SMT 50V 0.01uF C0G 0805 10%"
+"C14:2","10n","BottomLayer","CAPC2012X14M","29.8000","40.0000","90","C0805H103K5GACTU, 
+Multilayer Ceramic Capacitors MLCC - SMD/SMT 50V 0.01uF C0G 0805 10%"
+"D1:1","SG01S-18","TopLayer","TO18","12.0000","12.9950","90","SG01 series photodiode, TO18 housing"
+"J8","61300211121","TopLayer","HDRV2W110P0X254_1X2_508X254X854P","83.7300","14.6600","0","Connector"
+"X1:1","73251-3140","BottomLayer","73251-3140","4.5000","11.7000","90","Connector, Receptacle, SMA, RF, 50Ohm, Molex"
+"X1:2","73251-3140","BottomLayer","73251-3140","4.5000","35.8000","270","Connector, Receptacle, SMA, RF, 50Ohm, Molex"
+"R10:1","1K","BottomLayer","RESC2112X05M","27.1000","16.1000","270","CRCW08051K00JNEC, Thick Film Resistors D12/CRCW0805 200 1K0 5% ET6 e3"
+"R10:2","1K","BottomLayer","RESC2112X05M","27.1000","40.0000","270","CRCW08051K00JNEC, Thick Film Resistors D12/CRCW0805 200 1K0 5% ET6 e3"
+"R8:1","1K","BottomLayer","RESC2112X05M","37.1000","13.6000","90","CRCW08051K00JNEC, Thick Film Resistors D12/CRCW0805 200 1K0 5% ET6 e3"
+"R8:2","1K","BottomLayer","RESC2112X05M","37.1000","37.5000","90","CRCW08051K00JNEC, Thick Film Resistors D12/CRCW0805 200 1K0 5% ET6 e3"
+"R5","10K","BottomLayer","RESC2112X05M","60.0000","29.9000","0","CRCW080510K0FKEA, Thick Film Resistors 1/8watt 10Kohms 1% 100ppm"
+"R1","1K","BottomLayer","RESC2112X05M","47.3000","31.0000","270","CRCW08051K00JNEC, Thick Film Resistors D12/CRCW0805 200 1K0 5% ET6 e3"
+"J9","61300211121","TopLayer","HDRV2W110P0X254_1X2_508X254X854P","83.7300","17.2000","0","Connector"
+"IC2:1","OPA387DBVT","BottomLayer","SOT95P280X145-5N","33.5000","11.5000","0","Integrated Circuit"
+"IC2:2","OPA387DBVT","BottomLayer","SOT95P280X145-5N","33.5000","35.4000","0","Integrated Circuit"
+"C18:1","1u","BottomLayer","CAPC2012X14M","33.7000","5.7000","180","C0805C105K5RACTU, Multilayer Ceramic Capacitors MLCC - SMD/SMT 50V 1uF X7R 0805 10%"
+"C18:2","1u","BottomLayer","CAPC2012X14M","33.7000","29.5000","180","C0805C105K5RACTU, Multilayer Ceramic Capacitors MLCC - SMD/SMT 50V 1uF X7R 0805 10%"
+"C17:1","0.1u","BottomLayer","CAPC2012X14M","33.7000","8.4000","180","C0805C104K5RACTU, Multilayer Ceramic Capacitors MLCC - SMD/SMT 50V 0.1uF X7R 0805 10%"
+"C17:2","0.1u","BottomLayer","CAPC2012X14M","33.7000","32.2000","180","C0805C104K5RACTU, Multilayer Ceramic Capacitors MLCC - SMD/SMT 50V 0.1uF X7R 0805 10%"
+"C16:1","1u","BottomLayer","CAPC2012X14M","24.6000","5.7000","0","C0805C105K5RACTU, Multilayer Ceramic Capacitors MLCC - SMD/SMT 50V 1uF X7R 0805 10%"
+"C16:2","1u","BottomLayer","CAPC2012X14M","24.6000","29.5000","0","C0805C105K5RACTU, Multilayer Ceramic Capacitors MLCC - SMD/SMT 50V 1uF X7R 0805 10%"
+"C9","220n","BottomLayer","C_0603","62.8000","17.4000","0","Capacitor 0603"
+"C1","10n","BottomLayer","CAPC2012X14M","50.0000","31.0000","90","C0805H103K5GACTU, 
+Multilayer Ceramic Capacitors MLCC - SMD/SMT 50V 0.01uF C0G 0805 10%"
+"Y1","ECS-2520MVLC-020-BN-TR","BottomLayer","ECS2520MVLC020BNTR","62.2000","23.4000","180","ECS-2520MVLC-081.92-BN-TR, Standard Clock Oscillators MultiVolt ECS-2520MVLC,Active,XO (Standard),8.192MHz,Enable/Disable,CMOS,1.8V, 2.5V, 3.3V,+/-50ppm,-40 C 85 C,Surface Mount,4-SMD, No Lead,0.098" L x 0.079" W (2.50mm x 2.00mm),0.035" (0.90mm)"
+"R9:1","1K","BottomLayer","RESC2112X05M","44.7000","22.2000","90","CRCW08051K00JNEC, Thick Film Resistors D12/CRCW0805 200 1K0 5% ET6 e3"
+"R9:2","1K","BottomLayer","RESC2112X05M","44.7000","26.6000","270","CRCW08051K00JNEC, Thick Film Resistors D12/CRCW0805 200 1K0 5% ET6 e3"
+"R3","10K","BottomLayer","RESC2112X05M","60.0000","34.9000","0","CRCW080510K0FKEA, Thick Film Resistors 1/8watt 10Kohms 1% 100ppm"
+"J7","61300211121","TopLayer","HDRV2W110P0X254_1X2_508X254X854P","83.7300","12.1200","0","Connector"
+"J6","61300211121","TopLayer","HDRV2W110P0X254_1X2_508X254X854P","83.7300","9.5800","0","Connector"
+"J1","61301611121","BottomLayer","HDRV16W79P0X254_1X16_4064X254X874P","67.4000","23.5500","270","Connector"
+"J2","61301211121","BottomLayer","HDRV12W79P0X254_1X12_3048X254X874P","87.7250","18.4700","270","Connector"
+"IC3:1","LMP7721MA","BottomLayer","SOIC127P600X175-8N","23.0000","14.4000","270","Integrated Circuit"
+"IC3:2","LMP7721MA","BottomLayer","SOIC127P600X175-8N","23.0000","38.4000","270","Integrated Circuit"
+"IC1","ADS131M03IPWR","BottomLayer","SOP65P640X120-20N","56.0000","25.0000","0","Integrated Circuit"
+"FL1","BLM21SP601BH1D","BottomLayer","BLM21AG102BH1J","56.0000","14.3000","0","BLM18PG181SN1D"
+"D1:2","SG01S-18","TopLayer","TO18","12.0000","36.9950","90","SG01 series photodiode, TO18 housing"
+"C12:1","10n","BottomLayer","CAPC2012X14M","50.0000","22.2000","270","C0805H103K5GACTU, 
+Multilayer Ceramic Capacitors MLCC - SMD/SMT 50V 0.01uF C0G 0805 10%"
+"C12:2","10n","BottomLayer","CAPC2012X14M","50.0000","26.6000","90","C0805H103K5GACTU, 
+Multilayer Ceramic Capacitors MLCC - SMD/SMT 50V 0.01uF C0G 0805 10%"
+"C10","0.1u","BottomLayer","CAPC2012X14M","62.8000","20.1000","180","C0805C104K5RACTU, Multilayer Ceramic Capacitors MLCC - SMD/SMT 50V 0.1uF X7R 0805 10%"
+"C8","1u","BottomLayer","CAPC2012X14M","53.6000","17.4000","0","C0805C105K5RACTU, Multilayer Ceramic Capacitors MLCC - SMD/SMT 50V 1uF X7R 0805 10%"
+"C7","1u","BottomLayer","CAPC2012X14M","58.4000","17.4000","180","C0805C105K5RACTU, Multilayer Ceramic Capacitors MLCC - SMD/SMT 50V 1uF X7R 0805 10%"
+"C6","0.1u","BottomLayer","CAPC2012X14M","53.6000","20.1000","0","C0805C104K5RACTU, Multilayer Ceramic Capacitors MLCC - SMD/SMT 50V 0.1uF X7R 0805 10%"
+"C5","0.1u","BottomLayer","CAPC2012X14M","58.4000","20.1000","180","C0805C104K5RACTU, Multilayer Ceramic Capacitors MLCC - SMD/SMT 50V 0.1uF X7R 0805 10%"

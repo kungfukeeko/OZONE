@@ -1,0 +1,99 @@
+#include <Wire.h> 
+#include <LiquidCrystal_I2C.h>
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+const int ANALOG_PIN_1 = A0;
+const int ANALOG_PIN_2 = A1;
+const int NUM_SAMPLES = 50;
+const int READ_INTERVAL = 100;
+const int PRINT_INTERVAL = 5000;
+
+unsigned long previousReadTime = 0;
+unsigned long previousPrintTime = 0;
+int readings1[NUM_SAMPLES];
+int readings2[NUM_SAMPLES];
+int currentIndex = 0;
+
+void setup() {
+  Serial.begin(9600);
+  lcd.begin();
+  lcd.backlight();
+}
+
+void loop() {
+  unsigned long currentMillis = millis();
+
+  // Read analog inputs every 100ms
+  if (currentMillis - previousReadTime >= READ_INTERVAL) {
+    previousReadTime = currentMillis;
+    int sensorValue1 = analogRead(ANALOG_PIN_1);
+    int sensorValue2 = analogRead(ANALOG_PIN_2);
+    readings1[currentIndex] = sensorValue1;
+    readings2[currentIndex] = sensorValue2;
+    currentIndex = (currentIndex + 1) % NUM_SAMPLES;
+  }
+
+  // Calculate average and standard deviation every 5 seconds
+  if (currentMillis - previousPrintTime >= PRINT_INTERVAL) {
+    previousPrintTime = currentMillis;
+    float average1 = calculateAverage(readings1);
+    float average2 = calculateAverage(readings2);
+    float v1 = average1*(5.0/1023.0);
+    float v2 = average2*(5.0/1023.0);
+    float standardDeviation1 = calculateStandardDeviation(readings1);
+    float standardDeviation2 = calculateStandardDeviation(readings2);
+    float ratioAverage = average1 / (2*average2);
+    float ratioStandardDeviation = calculateRatioStandardDeviation(average1, average2, standardDeviation1, standardDeviation2);
+
+    Serial.print("Average V1: ");
+    Serial.print(v1);
+    Serial.print("\tStandard Deviation V1: ");
+    Serial.print(standardDeviation1);
+    Serial.print("\tAverage V2: ");
+    Serial.print(v2);
+    Serial.print("\tStandard Deviation V2: ");
+    Serial.print(standardDeviation2);
+    Serial.print("\tRatio Average: ");
+    Serial.print(ratioAverage);
+    Serial.print("\tRatio Standard Deviation: ");
+    Serial.println(ratioStandardDeviation);
+
+    lcd.clear();
+    lcd.print("1:");
+    lcd.print(v1,3);
+    lcd.print(",2:");
+    lcd.print(v2,3);
+    lcd.setCursor(0, 1);
+    lcd.print("R ");
+    lcd.print(ratioAverage,3);
+    lcd.print(" , ");
+    lcd.print(ratioStandardDeviation,3);
+  }
+}
+
+float calculateAverage(int* readings) {
+  float sum = 0;
+  for (int i = 0; i < NUM_SAMPLES; i++) {
+    sum += readings[i];
+  }
+  return sum / NUM_SAMPLES;
+}
+
+float calculateStandardDeviation(int* readings) {
+  float average = calculateAverage(readings);
+  float variance = 0;
+
+  for (int i = 0; i < NUM_SAMPLES; i++) {
+    float diff = readings[i] - average;
+    variance += diff * diff;
+  }
+
+  variance /= NUM_SAMPLES;
+  return sqrt(variance);
+}
+
+float calculateRatioStandardDeviation(float average1, float average2, float stdDeviation1, float stdDeviation2) {
+  float ratio = average1 / (2*average2);
+  float stdDeviationRatio = ratio * sqrt((stdDeviation1 * stdDeviation1) / (average1 * average1) + (stdDeviation2 * stdDeviation2) / (average2 * average2));
+  return stdDeviationRatio;
+}

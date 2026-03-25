@@ -11,21 +11,23 @@
 #define S0 12
 #define ADC_DRDY 6
 #define ADC_CS 9
+
 #define ADC_SCK 36
 #define ADC_MISO 37
 #define ADC_MOSI 35
 
 // 2000 sublists, rotate filters every 10 sublists, calibrate every 200
-#define MAX_SUBLISTS 500 // 2000
-//#define MAX_CAL 200     // 200
-#define BLOCKS_PER_PHASE 10
-#define SAMPLES_PER_BLOCK 20
+#define MAX_SUBLISTS 2000 //2000
+//#define MAX_CAL 200     //kalibrira se samo jednom na početku mjerenja
+#define BLOCKS_PER_PHASE 10   //koliko mjerenja prije okretanja filtera
+#define SAMPLES_PER_BLOCK 20   //koliko sample-ova za jedno mjerenje
 #define SAMPLES_FOR_CAL 100
 #define SERVO_SETTLE_TIME 1000
 #define ADC_DISCARD_SAMPLES 5
 
 uint8_t cal_cycles = 0;
 int utc_offset = +2;
+time_t startTime, endTime;
 
 // #define BUFFER_TIME 60 
 // BUFFER_TIME/2(Hz) su sekunde
@@ -47,6 +49,10 @@ adcOutput adc_podatak; //output tip, pristup kanalima 0-3, status
 
 Servo filter_servo;
 
+int pos1 = 10;
+int pos2 = 180;
+int pos_cal = 100;
+
 // SKALA
 int32_t neg_scale = -8388608;
 int32_t pos_scale = 8388607;
@@ -58,15 +64,12 @@ float PREF_ADC = 1200.0;
 double Vch0;
 double Vch1;
 double Vch2;
-double Vref = 101.75;
-
-uint64_t startTime;
-uint64_t endTime;
+float Vref = 101.75; //izmjereno stolnim DMM-mom dok je uređaj napajan USB-C kabelom, 101.13 mV kad je napajan baterijom
 
 void printTime();
-void printElapsed(uint64_t start, uint64_t end);
 time_t toUtc(time_t local);
 time_t compileTime();
+void printElapsed(uint64_t start, uint64_t end);
 
 void setup_ADC_CARD();
 void offsetCalibration();
@@ -101,7 +104,7 @@ void setup() {
   delay(3000);
   Serial.println("---- MEASUREMENTS START ----");
   // ------- OFFSET CALIBRATION -------
-  filter_rotation(90);
+  filter_rotation(pos_cal);
   offsetCalibration();
 }
 
@@ -109,14 +112,14 @@ void setup() {
 void loop() {
   
   // ------- PHASE  1 -------
-  filter_rotation(180);
+  filter_rotation(pos1);
   for (int i =0; i<BLOCKS_PER_PHASE; i++) {
     float mean_ch0, stddev_ch0, mean_ch1, stddev_ch1;
     measurement(mean_ch0, stddev_ch0, mean_ch1, stddev_ch1);
     storeMeasurement(mean_ch0, stddev_ch0, mean_ch1, stddev_ch1);
   }
   // ------- PHASE  2 -------
-  filter_rotation(5);
+  filter_rotation(pos2);
   for (int i =0; i<BLOCKS_PER_PHASE; i++) {
     float mean_ch0, stddev_ch0, mean_ch1, stddev_ch1;
     measurement(mean_ch0, stddev_ch0, mean_ch1, stddev_ch1);
@@ -125,14 +128,11 @@ void loop() {
 /*
   // ------- CALIBRATION -------
   if (cal_cycles >= MAX_CAL) {
-    cal_cycles = 0;
-    filter_rotation(90);
-    offsetCalibration();
+    kalibracija tokom mjerenja
   }
 */
   // ------- PRINT AND SHUTDOWN -------
   if (measurement_index >= MAX_SUBLISTS) {
-    Serial.print("\nMeasurement started at: ");
     Serial.println("---- DATA START ----");
     for (size_t i = 0; i < MAX_SUBLISTS; i++) {
       Serial.print("[");
@@ -159,7 +159,7 @@ void loop() {
     digitalWrite(ADC_SCK, LOW);
     digitalWrite(ADC_MOSI, LOW);
 
-    filter_rotation(0);
+    filter_rotation(pos1);
     // Power down analog board
     digitalWrite(EN, LOW);
     Serial.println("System powered down.");
@@ -201,17 +201,14 @@ void setup_ADC_CARD() {
 // ---------------- FILTER ROTATION ----------------
 void filter_rotation(int pos) {
 
-
   adc1.sendcmd(CMD_STANDBY);
   delay(10);
 
   Serial.print("Filter in position ");
   Serial.println(pos);
 
-  //filter_servo.attach(S0);
   filter_servo.write(pos);
   delay(SERVO_SETTLE_TIME);
-  //filter_servo.detach();
 
   adc1.sendcmd(CMD_WAKEUP);
   delay(10);
@@ -251,8 +248,6 @@ void offsetCalibration() {
   Serial.print(" mV   ");
   Serial.print(offset_v1);
   Serial.println(" mV");
-
-  storeOffset(offset_v0, 0, offset_v1, 0);
 }
 
 // ---------------- READ AND COMPUTE ----------------

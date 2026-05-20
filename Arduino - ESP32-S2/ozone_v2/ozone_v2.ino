@@ -8,7 +8,7 @@
 //#include <Fonts/FreeSans12pt7b.h>
 
 #define EN 11
-#define S0 12
+#define S0 5
 #define ADC_DRDY 6
 #define ADC_CS 9
 

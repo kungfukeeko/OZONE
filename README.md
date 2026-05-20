@@ -1,4 +1,4 @@
-------  MJERENJE STUPCA OZONA OZONA  ------
+------  MJERENJE STUPCA OZONA  ------
 
 Ovdje nam se nalaze svi bitni file-ovi za proizvesti i programirati instrument ☀️
 

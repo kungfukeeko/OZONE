@@ -74,7 +74,7 @@ void printElapsed(uint64_t start, uint64_t end);
 void setup_ADC_CARD();
 void offsetCalibration();
 void filter_rotation(int pos);
-void measurement(float &mean_ch2, float &sttdev_ch2);
+void measurement(float &mean_v0, float &stddev_v0, float &mean_v1, float &stddev_v1);
 void storeMeasurement(float a, float b, float c, float d);
 
 // ---------------- DYNAMIC STORAGE ----------------

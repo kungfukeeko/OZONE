@@ -291,10 +291,8 @@ void setup() {
         while (1) delay(1000);
     }
 
-    // On power loss, set RTC to the UTC timestamp captured at upload time.
-    // BUILD_UTC_TIMESTAMP is injected by set_build_time.py — accurate to within seconds.
     if (rtc.lostPower() || rtc.now().year() < 2024 || rtc.now().year() > 2035) {
-        rtc.adjust(DateTime((uint32_t)BUILD_UTC_TIMESTAMP));
+        rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
     }
 
     // Load last known coordinates from flash
@@ -314,11 +312,8 @@ unsigned long lastDraw = 0;
 
 void loop() {
     // keep feeding GPS parser continuously
-    while (gpsSerial.available()) {
-        char c = gpsSerial.read();
-        gps.encode(c);
-        Serial.write(c);  // TODO: remove after GPS confirmed working
-    }
+    while (gpsSerial.available())
+        gps.encode(gpsSerial.read());
 
     if (gps.location.isValid()) {
         gpsLat = gps.location.lat();
@@ -334,8 +329,9 @@ void loop() {
         hasFix = true;
     }
 
-    // Sync RTC from GPS UTC time once on first valid fix, then redraw immediately
-    if (!rtcSyncedGPS && gps.date.isValid() && gps.time.isValid()) {
+    // Sync RTC from GPS UTC time once on first valid fix, then redraw immediately.
+    // location.isValid() guards against pre-fix garbage time the module sends on startup.
+    if (!rtcSyncedGPS && gps.location.isValid() && gps.date.isValid() && gps.time.isValid()) {
         rtc.adjust(DateTime(gps.date.year(), gps.date.month(), gps.date.day(),
                             gps.time.hour(), gps.time.minute(), gps.time.second()));
         rtcSyncedGPS = true;

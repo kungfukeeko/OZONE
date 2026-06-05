@@ -1,12 +1,15 @@
 #include "Arduino.h"
 #include "ADS131M04.h"
 #include <ESP32Servo.h>
-#include <TimeLib.h>
-//#include <Adafruit_NeoPixel.h>
-//#include "Adafruit_TestBed.h"
-//#include <Adafruit_ST7789.h> 
-//#include <Fonts/FreeSans12pt7b.h>
+#include <Wire.h>
+#include <RTClib.h>
+#include <TinyGPSPlus.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_ST7789.h>
+#include <Preferences.h>
+#include <math.h>
 
+// ---------------- ANALOG BOARD / ADC PINS ----------------
 #define EN 11
 #define S0 5
 #define ADC_DRDY 6
@@ -16,8 +19,27 @@
 #define ADC_MISO 37
 #define ADC_MOSI 35
 
+// ---------------- TFT (built-in ST7789, Feather ESP32-S2 TFT) ----------------
+#ifndef TFT_CS
+  #define TFT_CS        42
+  #define TFT_DC        40
+  #define TFT_RST       41
+  #define TFT_BACKLITE  45
+  #define TFT_I2C_POWER  7
+#endif
+
+// ---------------- GPS (Serial1) ----------------
+// NEO-M8N TX -> GPIO2 (Feather RX), NEO-M8N RX <- GPIO1 (Feather TX)
+// A0-A3 (GPIO15-18) are reserved for LDRs
+#define GPS_RX    2
+#define GPS_TX    1
+#define GPS_BAUD  9600
+
+#define UTC_OFFSET_HOURS 2
+
+// ---------------- MEASUREMENT CONFIG ----------------
 // 2000 sublists, rotate filters every 10 sublists, calibrate every 200
-#define MAX_SUBLISTS 2000 //2000
+#define MAX_SUBLISTS 200 //2000
 //#define MAX_CAL 200     //kalibrira se samo jednom na početku mjerenja
 #define BLOCKS_PER_PHASE 10   //koliko mjerenja prije okretanja filtera
 #define SAMPLES_PER_BLOCK 20   //koliko sample-ova za jedno mjerenje
@@ -25,29 +47,33 @@
 #define SERVO_SETTLE_TIME 1000
 #define ADC_DISCARD_SAMPLES 5
 
-uint8_t cal_cycles = 0;
-int utc_offset = +2;
-time_t startTime, endTime;
+// ---------------- DISPLAY COLORS ----------------
+#define C_BG      0x0000  // black
+#define C_TIME    0x07E0  // green
+#define C_DATE    0x001F  // blue
+#define C_COORD   0xFFE0  // yellow
+#define C_AZ      0xF81F  // magenta
+#define C_LABEL   0x7BEF  // light gray
+#define C_SEP     0x2945  // dark divider
+#define C_CH1     0x07FF  // cyan
+#define C_CH2     0xFD20  // orange
+#define C_GPS_OK  0x07E0
+#define C_GPS_BAD 0xF800
 
-// #define BUFFER_TIME 60 
-// BUFFER_TIME/2(Hz) su sekunde
-
-// INTERRUPT
-volatile uint16_t drdy_div = 0;
-volatile bool drdy_fall = false; //data ready, seta se interuptom
-void IRAM_ATTR adc_ready_interrupt() {
-    drdy_div++;
-    if (drdy_div >= 100) {
-        drdy_div = 0;
-        drdy_fall = true;
-    }
-}
-
-// SVE ADC
+// ---------------- HARDWARE OBJECTS ----------------
 ADS131M04 adc1;        //objekt ADC-a
 adcOutput adc_podatak; //output tip, pristup kanalima 0-3, status
-
 Servo filter_servo;
+
+Adafruit_ST7789 tft(&SPI, TFT_CS, TFT_DC, TFT_RST);
+RTC_DS3231      rtc;
+TinyGPSPlus     gps;
+HardwareSerial  gpsSerial(1);
+Preferences     prefs;
+
+// ---------------- STATE ----------------
+uint8_t cal_cycles = 0;
+time_t startTime, endTime;
 
 int pos1 = 10;
 int pos2 = 180;
@@ -66,64 +92,159 @@ double Vch1;
 double Vch2;
 float Vref = 101.75; //izmjereno stolnim DMM-mom dok je uređaj napajan USB-C kabelom, 101.13 mV kad je napajan baterijom
 
-void printTime();
-time_t toUtc(time_t local);
-time_t compileTime();
-void printElapsed(uint64_t start, uint64_t end);
+// GPS / sun-position state
+double gpsLat = 0.0, gpsLon = 0.0;
+bool   hasFix       = false;
+bool   hasStoredPos = false;  // true if NVS holds coordinates from a previous GPS fix
+bool   rtcSyncedGPS = false;
 
-void setup_ADC_CARD();
-void offsetCalibration();
-void filter_rotation(int pos);
-void measurement(float &mean_ch0, float &sttdev_ch0, float &mean_ch1, float &sttdev_ch1);
-void storeMeasurement(float a, float b, float c, float d);
+struct SunPos { double elevation, azimuth; };
+
+// ---------------- INTERRUPT ----------------
+volatile uint16_t drdy_div = 0;
+volatile bool drdy_fall = false; //data ready, seta se interuptom
+void IRAM_ATTR adc_ready_interrupt() {
+    drdy_div++;
+    if (drdy_div >= 100) {
+        drdy_div = 0;
+        drdy_fall = true;
+    }
+}
 
 // ---------------- DYNAMIC STORAGE ----------------
-float (*measurements)[4] = NULL;
+// each row: elevation, mean_ch0, stddev_ch0, mean_ch1, stddev_ch1
+float (*measurements)[5] = NULL;
 size_t measurement_index = 0;
+
+// ---------------- FUNCTION PROTOTYPES ----------------
+void   setup_ADC_CARD();
+void   offsetCalibration();
+void   filter_rotation(int pos);
+void   measurement(float &mean_ch0, float &sttdev_ch0, float &mean_ch1, float &sttdev_ch1);
+void   storeMeasurement(float elevation, float a, float b, float c, float d);
+void   storeOffset(float a, float b, float c, float d);
+
+void   splashSunrise();
+void   pollGPS();
+double toRad(double d);
+double toDeg(double r);
+uint16_t elevColor(double elev);
+const char* azCardinal(double az);
+
+double julianDay(int yr, int mo, int dy, int hr, int mn, int sc);
+SunPos sunPosition(double latDeg, double lonDeg, double JD);
+void   drawScreen(const DateTime& now, const SunPos& sun,
+                  float m0, float sd0, float m1, float sd1);
 
 // ---------------- SETUP ----------------
 void setup() {
+  // The ADS131M04 only starts converting reliably after a *cold* boot, but it
+  // also shares the SPI bus with the built-in TFT (SCK/MOSI/MISO). An unpowered
+  // ADC loads those lines and the TFT goes blank. So: hold the analog board OFF
+  // long enough to discharge/cold-boot the ADC (the screen is blank anyway during
+  // USB enumeration), THEN power it up BEFORE any TFT/SPI activity.
   pinMode(EN, OUTPUT);
-  digitalWrite(EN, HIGH);
+  digitalWrite(EN, LOW);
 
   Serial.begin(115200);
-  delay(5000);
-  setTime(toUtc(compileTime()));
+  Serial.setTxTimeoutMs(0);  // never block on USB writes when no serial host is draining them
+  delay(2500);               // USB CDC enumeration + discharge the analog rail (cold-boot the ADC)
+
+  digitalWrite(EN, HIGH);    // power the analog board up (cold) before touching the shared SPI bus
+  delay(100);
+
+  // Deselect the ADC on the shared SPI bus BEFORE the TFT uses it. Otherwise the
+  // powered ADC sees the TFT's clock/data on SCK/MOSI, desyncs its SPI frame and
+  // stops producing DRDY -> measurement times out with zero readings.
+  pinMode(ADC_CS, OUTPUT);
+  digitalWrite(ADC_CS, HIGH);
+
+  // power up I2C bus + TFT — DS3231 needs VCC stable before Wire.begin()
+  pinMode(TFT_I2C_POWER, OUTPUT);
+  digitalWrite(TFT_I2C_POWER, HIGH);
+  delay(50);
+  pinMode(TFT_BACKLITE, OUTPUT);
+  digitalWrite(TFT_BACKLITE, HIGH);
+
+  tft.init(135, 240);
+  tft.setRotation(3);
+  tft.fillScreen(C_BG);
+  tft.setTextWrap(false);
+  splashSunrise();
+
+  Wire.begin();
+  if (!rtc.begin()) {
+    tft.fillScreen(C_BG);
+    tft.setTextColor(C_GPS_BAD);
+    tft.setTextSize(2);
+    tft.setCursor(4, 4);
+    tft.print("DS3231 ERROR");
+    while (1) delay(1000);
+  }
+  if (rtc.lostPower() || rtc.now().year() < 2024 || rtc.now().year() > 2035) {
+    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+  }
+
+  // load last known coordinates from flash so sun position shows before a fix
+  prefs.begin("ozone", true);  // read-only
+  gpsLat = prefs.getDouble("lat", 0.0);
+  gpsLon = prefs.getDouble("lon", 0.0);
+  hasStoredPos = prefs.getBool("valid", false);
+  prefs.end();
+
+  gpsSerial.begin(GPS_BAUD, SERIAL_8N1, GPS_RX, GPS_TX);
+  Serial.println("GPS serial started, waiting for NMEA...");
+
   startTime = millis();
 
   filter_servo.attach(S0);
 
   setup_ADC_CARD();
-  attachInterrupt(ADC_DRDY, adc_ready_interrupt, FALLING);//interupt na DRDY pin  
+  attachInterrupt(ADC_DRDY, adc_ready_interrupt, FALLING);//interupt na DRDY pin
+  drdy_div  = 0;       // start the divider/flag clean after the flush read
+  drdy_fall = false;
 
-  measurements = (float (*)[4])malloc(MAX_SUBLISTS * sizeof(*measurements));
+  measurements = (float (*)[5])malloc(MAX_SUBLISTS * sizeof(*measurements));
   if (!measurements) {
     Serial.println("Memory allocation failed!");
     while (1);
   }
-  delay(3000);
+  delay(800);  // let the finished sunrise linger before measurements begin
   Serial.println("---- MEASUREMENTS START ----");
   // ------- OFFSET CALIBRATION -------
-  filter_rotation(pos_cal);
-  offsetCalibration();
+  // current test board has no photodiodes / no 100mV reference mod -> inputs float
+  //filter_rotation(pos_cal);
+  //offsetCalibration();
 }
 
 // ---------------- LOOP ----------------
 void loop() {
-  
+
+  // ------- SUN POSITION (computed once per loop, before phase 1) -------
+  pollGPS();
+  DateTime utcNow   = rtc.now();
+  double   JD       = julianDay(utcNow.year(), utcNow.month(), utcNow.day(),
+                                utcNow.hour(), utcNow.minute(), utcNow.second());
+  SunPos   sun      = sunPosition(gpsLat, gpsLon, JD);
+  float    elevation = (float)sun.elevation;
+
   // ------- PHASE  1 -------
   filter_rotation(pos1);
   for (int i =0; i<BLOCKS_PER_PHASE; i++) {
     float mean_ch0, stddev_ch0, mean_ch1, stddev_ch1;
     measurement(mean_ch0, stddev_ch0, mean_ch1, stddev_ch1);
-    storeMeasurement(mean_ch0, stddev_ch0, mean_ch1, stddev_ch1);
+    storeMeasurement(elevation, mean_ch0, stddev_ch0, mean_ch1, stddev_ch1);
+    DateTime nowLocal = DateTime(rtc.now().unixtime() + UTC_OFFSET_HOURS * 3600UL);
+    drawScreen(nowLocal, sun, mean_ch0, stddev_ch0, mean_ch1, stddev_ch1);
   }
   // ------- PHASE  2 -------
   filter_rotation(pos2);
   for (int i =0; i<BLOCKS_PER_PHASE; i++) {
     float mean_ch0, stddev_ch0, mean_ch1, stddev_ch1;
     measurement(mean_ch0, stddev_ch0, mean_ch1, stddev_ch1);
-    storeMeasurement(mean_ch0, stddev_ch0, mean_ch1, stddev_ch1);
+    storeMeasurement(elevation, mean_ch0, stddev_ch0, mean_ch1, stddev_ch1);
+    DateTime nowLocal = DateTime(rtc.now().unixtime() + UTC_OFFSET_HOURS * 3600UL);
+    drawScreen(nowLocal, sun, mean_ch0, stddev_ch0, mean_ch1, stddev_ch1);
   }
 /*
   // ------- CALIBRATION -------
@@ -139,12 +260,12 @@ void loop() {
       Serial.print(measurements[i][0], 4); Serial.print(",");
       Serial.print(measurements[i][1], 4); Serial.print(",");
       Serial.print(measurements[i][2], 4); Serial.print(",");
-      Serial.print(measurements[i][3], 4);
+      Serial.print(measurements[i][3], 4); Serial.print(",");
+      Serial.print(measurements[i][4], 4);
       Serial.println("]");
     }
     Serial.println("---- DATA END ----");
     endTime = millis();
-    printElapsed(startTime, endTime);
     Serial.println("Shutting down system...");
     if (measurements != NULL) {
       free(measurements);
@@ -170,7 +291,7 @@ void loop() {
   }
 }
 
-// ADC INIT
+// ---------------- ADC INIT ----------------
 // 2kHz 0b0000001100010010 , 4kHz 0b0000001100001110 , 8kHz 0b0000001100001010
 void setup_ADC_CARD() {
 
@@ -196,7 +317,8 @@ void setup_ADC_CARD() {
   delay(10);
   adc1.sendcmd(CMD_WAKEUP);
   delay(10);
-}  
+  adc1.readADC();   // flush any latched DRDY so the first interrupt edge is genuine
+}
 
 // ---------------- FILTER ROTATION ----------------
 void filter_rotation(int pos) {
@@ -214,7 +336,7 @@ void filter_rotation(int pos) {
   delay(10);
 }
 
-// --------------- OFFSET CALIBRATION ---------------
+// ---------------- OFFSET CALIBRATION ----------------
 void offsetCalibration() {
   int32_t m0 = 0;
   int32_t m1 = 0;
@@ -223,7 +345,7 @@ void offsetCalibration() {
   while (collected < SAMPLES_FOR_CAL) {
     if (drdy_fall) {
       drdy_fall = false;
-      
+
       adcOutput temp = adc1.readADC();
 
       int32_t delta0 = temp.ch0 - m0;
@@ -231,7 +353,7 @@ void offsetCalibration() {
 
       int32_t delta1 = temp.ch1 - m1;
       m1 += delta1 / (collected + 1);
-      collected++;       
+      collected++;
     }
   }
   adc1.setChannelOffsetCalibration(0, m0);
@@ -258,6 +380,9 @@ void measurement(float &mean_v0, float &stddev_v0, float &mean_v1, float &stddev
   double s1 = 0;
   int collected = 0;
 
+  // Bail out if the ADC stops producing DRDY interrupts (e.g. analog board
+  // disconnected) so the loop never hangs after the boot animation.
+  unsigned long t0 = millis();
   while (collected < SAMPLES_PER_BLOCK) {
 
     if (drdy_fall) {
@@ -277,11 +402,16 @@ void measurement(float &mean_v0, float &stddev_v0, float &mean_v1, float &stddev
 
       collected++;
     }
+    if (millis() - t0 > 2000) {   // ADC not responding
+      Serial.println("ADC timeout: no DRDY (analog board connected?)");
+      break;
+    }
   }
+  int denom = (collected > 1) ? (collected - 1) : 1;
   mean_v0 = m0;
   mean_v1 = m1;
-  float variance0 = s0 / (SAMPLES_PER_BLOCK - 1);
-  float variance1 = s1 / (SAMPLES_PER_BLOCK - 1);
+  float variance0 = s0 / denom;
+  float variance1 = s1 / denom;
   if (variance0 < 0) variance0 = 0;
   stddev_v0 = sqrt(variance0);
   if (variance1 < 0) variance1 = 0;
@@ -299,14 +429,15 @@ void measurement(float &mean_v0, float &stddev_v0, float &mean_v1, float &stddev
 }
 
 // ---------------- STORE ----------------
-void storeMeasurement(float a, float b, float c, float d) {
+void storeMeasurement(float elevation, float a, float b, float c, float d) {
   if (measurement_index >= MAX_SUBLISTS)
     return;
 
-  measurements[measurement_index][0] = a;
-  measurements[measurement_index][1] = b;
-  measurements[measurement_index][2] = c;
-  measurements[measurement_index][3] = d;
+  measurements[measurement_index][0] = elevation;
+  measurements[measurement_index][1] = a;
+  measurements[measurement_index][2] = b;
+  measurements[measurement_index][3] = c;
+  measurements[measurement_index][4] = d;
 
   measurement_index++;
   cal_cycles++;
@@ -316,60 +447,302 @@ void storeOffset(float a, float b, float c, float d) {
   if (measurement_index >= MAX_SUBLISTS)
     return;
 
-  measurements[measurement_index][0] = a;
-  measurements[measurement_index][1] = b;
-  measurements[measurement_index][2] = c;
-  measurements[measurement_index][3] = d;
+  measurements[measurement_index][1] = a;
+  measurements[measurement_index][2] = b;
+  measurements[measurement_index][3] = c;
+  measurements[measurement_index][4] = d;
 }
 
-time_t toUtc(time_t local) {
-  return local - utc_offset * 3600L;
+// ---------------- GPS POLL + RTC SYNC ----------------
+void pollGPS() {
+  while (gpsSerial.available())
+    gps.encode(gpsSerial.read());
+
+  if (gps.location.isValid()) {
+    gpsLat = gps.location.lat();
+    gpsLon = gps.location.lng();
+    if (!hasFix) {
+      prefs.begin("ozone", false);
+      prefs.putDouble("lat", gpsLat);
+      prefs.putDouble("lon", gpsLon);
+      prefs.putBool("valid", true);
+      prefs.end();
+      hasStoredPos = true;
+    }
+    hasFix = true;
+  }
+
+  // Sync RTC from GPS UTC once on first valid fix.
+  // location.isValid() guards against pre-fix garbage time (year 2043).
+  if (!rtcSyncedGPS && gps.location.isValid() && gps.date.isValid() && gps.time.isValid()) {
+    rtc.adjust(DateTime(gps.date.year(), gps.date.month(), gps.date.day(),
+                        gps.time.hour(), gps.time.minute(), gps.time.second()));
+    rtcSyncedGPS = true;
+  }
 }
 
-// Code from JChristensen/Timezone Clock example
-time_t compileTime() {
-  const uint8_t COMPILE_TIME_DELAY = 8;
-  const char *compDate = __DATE__, *compTime = __TIME__, *months = "JanFebMarAprMayJunJulAugSepOctNovDec";
-  char chMon[4], *m;
-  tmElements_t tm;
+// ---------------- DISPLAY HELPERS ----------------
+double toRad(double d) { return d * M_PI / 180.0; }
+double toDeg(double r) { return r * 180.0 / M_PI; }
 
-  strncpy(chMon, compDate, 3);
-  chMon[3] = '\0';
-  m = strstr(months, chMon);
-  tm.Month = ((m - months) / 3 + 1);
-
-  tm.Day = atoi(compDate + 4);
-  tm.Year = atoi(compDate + 7) - 1970;
-  tm.Hour = atoi(compTime);
-  tm.Minute = atoi(compTime + 3);
-  tm.Second = atoi(compTime + 6);
-  time_t t = makeTime(tm);
-  return t + COMPILE_TIME_DELAY;
-}
-void printTime(time_t t) {
-  char buffer[25];
-  sprintf(buffer, "%04d-%02d-%02d %02d:%02d:%02d",
-          year(t), month(t), day(t),
-          hour(t), minute(t), second(t));
-  Serial.println(buffer);
+uint16_t elevColor(double elev) {
+  if (elev <  0.0) return 0x001F;  // blue  — below horizon
+  if (elev < 10.0) return 0xFC00;  // red-orange — near horizon
+  if (elev < 30.0) return 0xFD20;  // orange
+  if (elev < 60.0) return 0xFFE0;  // yellow
+  return 0xFFFF;                   // white — high sun
 }
 
-void printElapsed(uint64_t start, uint64_t end) {
+const char* azCardinal(double az) {
+  static const char* dirs[8] = {"N","NE","E","SE","S","SW","W","NW"};
+  return dirs[(int)((az + 22.5) / 45.0) % 8];
+}
 
-  uint64_t elapsed = end - start;
+// blend two RGB colors (0-255 components) by t (0..1) -> RGB565
+static uint16_t lerp565(int r1, int g1, int b1, int r2, int g2, int b2, float t) {
+  int r = r1 + (int)((r2 - r1) * t);
+  int g = g1 + (int)((g2 - g1) * t);
+  int b = b1 + (int)((b2 - b1) * t);
+  return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
+}
 
-  uint32_t seconds = elapsed / 1000;
-  uint32_t minutes = seconds / 60;
-  uint32_t hours = minutes / 60;
+// ---------------- BOOT SPLASH: SUNRISE ----------------
+// Night sky with fading stars warms into dawn while the sun rises behind the horizon.
+void splashSunrise() {
+  const int W = 240, H = 135;
+  const int HORIZON = 108;
+  const int SUN_R   = 13;
+  const int FRAMES  = 140;
+  // arc the sun travels: centred below screen, sweeping lower-left -> top
+  const float ARC_CX = 120.0f;   // arc centre x
+  const float ARC_CY = 150.0f;   // arc centre y (below the screen)
+  const float ARC_R  = 112.0f;   // arc radius
+  const float ANG0   = 78.0f;    // start angle (deg): hidden below horizon, far left
+  const float ANG1   =  0.0f;    // end angle  (deg): apex, top centre
 
-  seconds %= 60;
-  minutes %= 60;
+  for (int f = 0; f < FRAMES; f++) {
+    float t = (float)f / (FRAMES - 1);
+    float e = t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);  // smootherstep ease
 
-  Serial.print("Measurement duration: ");
-  Serial.print(hours);
-  Serial.print("h ");
-  Serial.print(minutes);
-  Serial.print("m ");
-  Serial.print(seconds);
-  Serial.println("s");
+    // --- sky gradient (top -> horizon) ---
+    for (int y = 0; y < HORIZON; y++) {
+      float fy = (float)y / HORIZON;
+      uint16_t top = lerp565( 8,  8, 32,  58, 132, 216, e);  // night blue -> bright day blue
+      uint16_t hor = lerp565(26, 12, 38, 150, 196, 236, e);  // dark      -> pale bright blue
+      uint16_t col = lerp565((top >> 8) & 0xF8, (top >> 3) & 0xFC, (top << 3) & 0xF8,
+                             (hor >> 8) & 0xF8, (hor >> 3) & 0xFC, (hor << 3) & 0xF8, fy);
+      tft.drawFastHLine(0, y, W, col);
+    }
+
+    // --- stars (fade out as dawn breaks) ---
+    if (e < 0.55f) {
+      uint8_t sb = (uint8_t)(220 * (1.0f - e / 0.55f));
+      uint16_t star = lerp565(8, 8, 32, sb, sb, sb, 1.0f);
+      for (int i = 0; i < 22; i++) {
+        int sx = (i * 53 + 17) % W;
+        int sy = (i * 29 + 7)  % (HORIZON - 24);
+        tft.drawPixel(sx, sy, star);
+        if (i % 3 == 0) tft.drawPixel(sx + 1, sy, star);  // a few brighter ones
+      }
+    }
+
+    // --- sun (rises along an arc, from behind the horizon up to the apex) ---
+    float ang = (ANG0 + (ANG1 - ANG0) * e) * (float)M_PI / 180.0f;
+    int xc = (int)(ARC_CX - ARC_R * sinf(ang));  // lower-left -> centre
+    int yc = (int)(ARC_CY - ARC_R * cosf(ang));  // below horizon -> high
+    uint16_t glow = lerp565(120, 30, 10, 255, 210, 110, e);
+    uint16_t disc = lerp565(210, 55, 15, 255, 240, 140, e);
+    tft.fillCircle(xc, yc, SUN_R + 5, glow);   // soft halo
+    tft.fillCircle(xc, yc, SUN_R,     disc);   // sun body
+    tft.fillCircle(xc - 4, yc - 4, SUN_R / 3,  // specular highlight
+                   lerp565(255, 150, 80, 255, 255, 220, e));
+
+    // --- ground hides the lower half so the sun appears to rise ---
+    uint16_t ground = lerp565(6, 10, 8, 22, 48, 26, e);
+    tft.fillRect(0, HORIZON, W, H - HORIZON, ground);
+    tft.drawFastHLine(0, HORIZON, W, lerp565(40, 20, 10, 255, 200, 120, e));  // horizon glow
+
+    // --- subtitle ---
+    tft.setTextSize(1);
+    tft.setCursor(78, H - 11);
+    tft.setTextColor(lerp565(60, 70, 90, 235, 245, 255, e));
+    tft.print("initializing...");
+
+    delay(6);
+  }
+}
+
+// ================================================================== JULIAN DAY
+// NOAA Solar Calculator. JD must be in UTC.
+double julianDay(int yr, int mo, int dy, int hr, int mn, int sc) {
+  if (mo <= 2) { yr--; mo += 12; }
+  int A = yr / 100;
+  int B = 2 - A + A / 4;
+  double jd = (int)(365.25 * (yr + 4716)) + (int)(30.6001 * (mo + 1))
+              + dy + B - 1524.5;
+  return jd + (hr + mn / 60.0 + sc / 3600.0) / 24.0;
+}
+
+// ================================================================== SUN POSITION
+SunPos sunPosition(double latDeg, double lonDeg, double JD) {
+  double JC = (JD - 2451545.0) / 36525.0;
+
+  double L0 = fmod(280.46646 + JC * (36000.76983 + JC * 0.0003032), 360.0);
+  if (L0 < 0) L0 += 360.0;
+  double M = 357.52911 + JC * (35999.05029 - 0.0001537 * JC);
+  double e = 0.016708634 - JC * (0.000042037 + 0.0000001267 * JC);
+
+  double C = sin(toRad(M))   * (1.914602 - JC * (0.004817 + 0.000014 * JC))
+           + sin(toRad(2*M)) * (0.019993 - 0.000101 * JC)
+           + sin(toRad(3*M)) * 0.000289;
+
+  double sunLon = L0 + C;
+  double omega  = 125.04 - 1934.136 * JC;
+  double lambda = sunLon - 0.00569 - 0.00478 * sin(toRad(omega));
+
+  double eps0 = 23.0 + (26.0 + (21.448 - JC * (46.815 + JC * (0.00059 - JC * 0.001813))) / 60.0) / 60.0;
+  double eps  = eps0 + 0.00256 * cos(toRad(omega));
+
+  double sinDec = sin(toRad(eps)) * sin(toRad(lambda));
+  double dec    = toDeg(asin(sinDec));
+
+  double y   = tan(toRad(eps / 2)) * tan(toRad(eps / 2));
+  double EqT = 4.0 * toDeg(y * sin(2 * toRad(L0))
+             - 2 * e * sin(toRad(M))
+             + 4 * e * y * sin(toRad(M)) * cos(2 * toRad(L0))
+             - 0.5 * y * y * sin(4 * toRad(L0))
+             - 1.25 * e * e * sin(2 * toRad(M)));
+
+  // fraction of day past midnight UTC (0.0–1.0)
+  double dayFrac = JD - floor(JD) - 0.5;
+  if (dayFrac < 0) dayFrac += 1.0;
+
+  double TST = fmod(dayFrac * 1440.0 + EqT + 4.0 * lonDeg, 1440.0);
+  if (TST < 0) TST += 1440.0;
+
+  double HA = (TST / 4.0 < 0) ? TST / 4.0 + 180.0 : TST / 4.0 - 180.0;
+
+  double cosZ = constrain(
+      sin(toRad(latDeg)) * sin(toRad(dec)) +
+      cos(toRad(latDeg)) * cos(toRad(dec)) * cos(toRad(HA)),
+      -1.0, 1.0);
+  double zenith = toDeg(acos(cosZ));
+  double elev   = 90.0 - zenith;
+
+  // atmospheric refraction correction
+  double refr;
+  if      (elev > 85.0)    refr = 0.0;
+  else if (elev > 5.0)     refr = ( 58.1 / tan(toRad(elev))
+                                  -  0.07 / pow(tan(toRad(elev)), 3)
+                                  + 0.000086 / pow(tan(toRad(elev)), 5)) / 3600.0;
+  else if (elev > -0.575)  refr = (1735 + elev * (-518.2 + elev * (103.4 + elev * (-12.79 + elev * 0.711)))) / 3600.0;
+  else                     refr = (-20.772 / tan(toRad(elev))) / 3600.0;
+  elev += refr;
+
+  // azimuth (clockwise from north)
+  double sinZ = sin(toRad(zenith));
+  double az   = 0.0;
+  if (sinZ > 1e-10) {
+    double cosAz = constrain(
+        (sin(toRad(latDeg)) * cosZ - sin(toRad(dec))) / (cos(toRad(latDeg)) * sinZ),
+        -1.0, 1.0);
+    az = (HA > 0) ? fmod(toDeg(acos(cosAz)) + 180.0, 360.0)
+                  : fmod(540.0 - toDeg(acos(cosAz)), 360.0);
+  }
+
+  return {elev, az};
+}
+
+// ================================================================== DRAW SCREEN
+// Layout (240×135 landscape), everything size 2, three groups:
+//  y=5    HH:MM:SS (green)  DD/MM/YY (blue)             [GPS dot]
+//  y=25   N44.5328 E14.4690 (yellow)
+//  y=46   ─ separator ─
+//  y=52   EL +XX.X deg (elev-colored)
+//  y=72   AZ XXX.X NN  (magenta)
+//  y=92   ─ separator ─
+//  y=98   Ch1: mean  stddev  (cyan)
+//  y=118  Ch2: mean  stddev  (orange)
+void drawScreen(const DateTime& now, const SunPos& sun,
+                float m0, float sd0, float m1, float sd1) {
+  char buf[40];
+  bool havePos = hasFix || hasStoredPos;
+  tft.fillScreen(C_BG);
+  tft.setTextWrap(false);
+  tft.setTextSize(2);
+
+  // separators
+  tft.drawFastHLine(0, 46, 240, C_SEP);
+  tft.drawFastHLine(0, 92, 240, C_SEP);
+
+  // ----- time + date -----
+  tft.setTextColor(C_TIME);
+  snprintf(buf, sizeof(buf), "%02d:%02d:%02d", now.hour(), now.minute(), now.second());
+  tft.setCursor(4, 5);
+  tft.print(buf);
+
+  tft.setTextColor(C_DATE);
+  snprintf(buf, sizeof(buf), "%02d/%02d/%02d", now.day(), now.month(), now.year() % 100);
+  tft.setCursor(112, 5);
+  tft.print(buf);
+
+  // GPS status dot: red=no fix, orange=fix/no sync, green=fix+RTC synced
+  uint16_t dotColor = !hasFix ? C_GPS_BAD : (rtcSyncedGPS ? C_GPS_OK : 0xFD20);
+  tft.fillCircle(229, 12, 9, dotColor);
+  tft.setTextSize(1);
+  tft.setTextColor(0x0000);
+  tft.setCursor(226, 8);
+  tft.print(!hasFix ? "?" : (rtcSyncedGPS ? "G" : "g"));
+  tft.setTextSize(2);
+
+  // ----- coordinates -----
+  tft.setTextColor(C_COORD);
+  if (havePos) {
+    snprintf(buf, sizeof(buf), "%c%.4f %c%.4f",
+             gpsLat >= 0 ? 'N' : 'S', fabs(gpsLat),
+             gpsLon >= 0 ? 'E' : 'W', fabs(gpsLon));
+  } else {
+    snprintf(buf, sizeof(buf), "--.----  ---.----");
+  }
+  tft.setCursor(4, 25);
+  tft.print(buf);
+
+  // ----- elevation -----
+  tft.setTextColor(C_LABEL);
+  tft.setCursor(4, 52);
+  tft.print("EL ");
+  if (havePos) {
+    tft.setTextColor(elevColor(sun.elevation));
+    snprintf(buf, sizeof(buf), "%+6.1f", sun.elevation);
+    tft.print(buf);
+    tft.setTextColor(C_LABEL);
+    tft.print(" deg");
+  } else {
+    tft.print("  ---.-");
+  }
+
+  // ----- azimuth -----
+  tft.setTextColor(C_LABEL);
+  tft.setCursor(4, 72);
+  tft.print("AZ ");
+  if (havePos) {
+    tft.setTextColor(C_AZ);
+    snprintf(buf, sizeof(buf), "%6.1f", sun.azimuth);
+    tft.print(buf);
+    tft.print(" ");
+    tft.print(azCardinal(sun.azimuth));
+  } else {
+    tft.print("  ---.-");
+  }
+
+  // ----- channel readings -----
+  tft.setTextColor(C_CH1);
+  snprintf(buf, sizeof(buf), "Ch1:%7.1f %5.1f", m0, sd0);
+  tft.setCursor(4, 98);
+  tft.print(buf);
+
+  tft.setTextColor(C_CH2);
+  snprintf(buf, sizeof(buf), "Ch2:%7.1f %5.1f", m1, sd1);
+  tft.setCursor(4, 118);
+  tft.print(buf);
 }

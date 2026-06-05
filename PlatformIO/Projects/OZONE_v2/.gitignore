@@ -3,3 +3,6 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+
+# private credentials — keep out of git (use secrets.example.h as the template)
+src/secrets.h

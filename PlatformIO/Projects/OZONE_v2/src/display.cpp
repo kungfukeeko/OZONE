@@ -337,3 +337,12 @@ void displayOff() {
   tft.enableDisplay(false);          // ST7789 display off
   digitalWrite(TFT_BACKLITE, LOW);   // backlight off -> screen dark
 }
+
+void displayMessage(const char* msg, bool ok) {
+  tft.fillScreen(C_BG);
+  tft.setTextWrap(false);
+  tft.setTextSize(2);
+  tft.setTextColor(ok ? C_TIME : C_GPS_BAD);
+  tft.setCursor(6, 56);
+  tft.print(msg);
+}

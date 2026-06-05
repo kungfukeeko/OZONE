@@ -6,7 +6,8 @@
 #include <TinyGPSPlus.h>
 #include <Preferences.h>
 #include <math.h>
-#include "display.h"   // TFT object, colours, animations and drawScreen live here
+#include "display.h"    // TFT object, colours, animations and drawScreen live here
+#include "datalink.h"   // WiFi upload of the measurement list to a computer
 
 // ---------------- ANALOG BOARD / ADC PINS ----------------
 #define EN 11
@@ -29,7 +30,7 @@
 
 // ---------------- MEASUREMENT CONFIG ----------------
 // 2000 sublists, rotate filters every 10 sublists, calibrate every 200
-#define MAX_SUBLISTS 200 //2000
+#define MAX_SUBLISTS 100 //2000
 //#define MAX_CAL 200     //kalibrira se samo jednom na početku mjerenja
 #define BLOCKS_PER_PHASE 10   //koliko mjerenja prije okretanja filtera
 #define SAMPLES_PER_BLOCK 20   //koliko sample-ova za jedno mjerenje
@@ -222,6 +223,13 @@ void loop() {
     }
     Serial.println("---- DATA END ----");
     endTime = millis();
+
+    // ------- SEND DATA OVER WIFI (before freeing the buffer) -------
+    displayMessage("Sending data...");
+    bool sent = uploadMeasurementsCSV(measurements, MAX_SUBLISTS);
+    displayMessage(sent ? "Upload done" : "Upload failed", sent);
+    delay(1500);
+
     Serial.println("Shutting down system...");
     if (measurements != NULL) {
       free(measurements);

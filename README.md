@@ -10,8 +10,8 @@ Prioritet je:
 4. Dizajnirati poklopac za platformu ⛺
 
 Kako bi primili podatke preko WiFi-a na kraju mjerenja
-- Create secrets.h , copy secrets.example.h and add your SECRET_WIFI_SSID, SECRET_WIFI_PASS, SECRET_PC_HOST.
+- Create secrets.h , copy secrets.example.h and add your SECRET_WIFI_SSID, SECRET_WIFI_PASS, SECRET_PC_HOST
 - Install nmap and run command before measurement end: ncat -l 5000 > data.csv
 
-File will be saved to data.csv, rename it before another measurement.
-Ovo ću updateat po potrebi.
+File će biti spremljen pod data.csv, preimenuj ga prije idućeg mjerenja.
+Ovo ću update-at po potrebi.

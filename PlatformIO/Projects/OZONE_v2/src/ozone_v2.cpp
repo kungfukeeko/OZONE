@@ -49,10 +49,12 @@ Preferences     prefs;
 
 // ---------------- STATE ----------------
 uint8_t cal_cycles = 0;
-// -------- FILTER SERVO POSITIONS --------
-int pos1 = 10;
-int pos2 = 180;
-int pos_cal = 100;
+// -------- FILTER SERVO POSITIONS (servo pulse width, microseconds) --------
+// 400 / 2600 are the ends of the widened SG90 range; pos_cal sits halfway.
+// If the servo buzzes/stalls at an end, back these off (e.g. 500 / 2500).
+int pos1    = 400;
+int pos2    = 2600;
+int pos_cal = 1500;
 
 // SKALA
 int32_t neg_scale = -8388608;
@@ -160,7 +162,6 @@ void setup() {
     Serial.println("Memory allocation failed!");
     while (1);
   }
-  delay(800);
   Serial.println("---- MEASUREMENTS START ----");
   // ------- OFFSET CALIBRATION -------
   filter_rotation(pos_cal);
@@ -284,11 +285,12 @@ void filter_rotation(int pos) {
   adc1.sendcmd(CMD_STANDBY);
   delay(10);
 
-  Serial.print("Filter in position ");
-  Serial.println(pos);
+  Serial.print("Filter to ");
+  Serial.print(pos);
+  Serial.println(" us");
 
-  filter_servo.attach(S0);
-  filter_servo.write(pos);
+  filter_servo.attach(S0, 400, 2600);   // explicit range so writeMicroseconds isn't clamped
+  filter_servo.writeMicroseconds(pos);
   delay(SERVO_SETTLE_TIME);
   filter_servo.detach();
 

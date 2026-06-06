@@ -49,7 +49,7 @@ Preferences     prefs;
 
 // ---------------- STATE ----------------
 uint8_t cal_cycles = 0;
-
+// -------- FILTER SERVO POSITIONS --------
 int pos1 = 10;
 int pos2 = 180;
 int pos_cal = 100;

@@ -1,5 +1,5 @@
 #include "Arduino.h"
-#include "ADS131M04.h"
+#include "ADS131M04.h"  // ADC object
 #include <ESP32Servo.h>
 #include <Wire.h>
 #include <RTClib.h>
@@ -21,7 +21,6 @@
 
 // ---------------- GPS (Serial1) ----------------
 // NEO-M8N TX -> GPIO2 (Feather RX), NEO-M8N RX <- GPIO1 (Feather TX)
-// A0-A3 (GPIO15-18) are reserved for LDRs
 #define GPS_RX    2
 #define GPS_TX    1
 #define GPS_BAUD  9600
@@ -31,9 +30,9 @@
 // ---------------- MEASUREMENT CONFIG ----------------
 // 2000 sublists, rotate filters every 10 sublists, calibrate every 200
 #define MAX_SUBLISTS 100 //2000
-//#define MAX_CAL 200     //kalibrira se samo jednom na početku mjerenja
-#define BLOCKS_PER_PHASE 10   //koliko mjerenja prije okretanja filtera
-#define SAMPLES_PER_BLOCK 20   //koliko sample-ova za jedno mjerenje
+//#define MAX_CAL 200     // Kalibrira se samo jednom na početku mjerenja
+#define BLOCKS_PER_PHASE 10   // Koliko mjerenja prije okretanja filtera
+#define SAMPLES_PER_BLOCK 20  // Koliko sample-ova za jedno mjerenje
 #define SAMPLES_FOR_CAL 100
 #define SERVO_SETTLE_TIME 1000
 #define ADC_DISCARD_SAMPLES 5
@@ -50,7 +49,6 @@ Preferences     prefs;
 
 // ---------------- STATE ----------------
 uint8_t cal_cycles = 0;
-time_t startTime, endTime;
 
 int pos1 = 10;
 int pos2 = 180;
@@ -93,11 +91,10 @@ size_t measurement_index = 0;
 
 // ---------------- FUNCTION PROTOTYPES ----------------
 void   setup_ADC_CARD();
-void   offsetCalibration();
 void   filter_rotation(int pos);
+void   offsetCalibration(float &offset_v0, float &offset_v1);
 void   measurement(float &mean_ch0, float &sttdev_ch0, float &mean_ch1, float &sttdev_ch1);
-void   storeMeasurement(float elevation, float a, float b, float c, float d);
-void   storeOffset(float a, float b, float c, float d);
+void   storeMeasurement(float el, float a, float b, float c, float d);
 
 void   pollGPS();
 double toRad(double d);
@@ -110,9 +107,9 @@ SunPos sunPosition(double latDeg, double lonDeg, double JD);
 void setup() {
   // The ADS131M04 only starts converting reliably after a *cold* boot, but it
   // also shares the SPI bus with the built-in TFT (SCK/MOSI/MISO). An unpowered
-  // ADC loads those lines and the TFT goes blank. So: hold the analog board OFF
-  // long enough to discharge/cold-boot the ADC (the screen is blank anyway during
-  // USB enumeration), THEN power it up BEFORE any TFT/SPI activity.
+  // ADC loads those lines and the TFT goes blank. 
+  // So: hold the analog board OFF long enough to discharge/cold-boot the ADC 
+  // (the screen is blank anyway during USB enumeration), THEN power it up BEFORE any TFT/SPI activity.
   pinMode(EN, OUTPUT);
   digitalWrite(EN, LOW);
 
@@ -135,6 +132,7 @@ void setup() {
 
   Wire.begin();
   if (!rtc.begin()) {
+    Serial.println("DS3231 ERROR");
     displayError("DS3231 ERROR");
     while (1) delay(1000);
   }
@@ -152,13 +150,9 @@ void setup() {
   gpsSerial.begin(GPS_BAUD, SERIAL_8N1, GPS_RX, GPS_TX);
   Serial.println("GPS serial started, waiting for NMEA...");
 
-  startTime = millis();
-
-  filter_servo.attach(S0);
-
   setup_ADC_CARD();
-  attachInterrupt(ADC_DRDY, adc_ready_interrupt, FALLING);//interupt na DRDY pin
-  drdy_div  = 0;       // start the divider/flag clean after the flush read
+  attachInterrupt(ADC_DRDY, adc_ready_interrupt, FALLING);
+  drdy_div  = 0;
   drdy_fall = false;
 
   measurements = (float (*)[5])malloc(MAX_SUBLISTS * sizeof(*measurements));
@@ -166,31 +160,31 @@ void setup() {
     Serial.println("Memory allocation failed!");
     while (1);
   }
-  delay(800);  // let the finished sunrise linger before measurements begin
+  delay(800);
   Serial.println("---- MEASUREMENTS START ----");
   // ------- OFFSET CALIBRATION -------
-  // current test board has no photodiodes / no 100mV reference mod -> inputs float
-  //filter_rotation(pos_cal);
-  //offsetCalibration();
+  filter_rotation(pos_cal);
+  float offset_v0, offset_v1;
+  offsetCalibration(offset_v0, offset_v1);
 }
 
 // ---------------- LOOP ----------------
 void loop() {
 
-  // ------- SUN POSITION (computed once per loop, before phase 1) -------
+  // ------- SUN POSITION -------
   pollGPS();
   DateTime utcNow   = rtc.now();
   double   JD       = julianDay(utcNow.year(), utcNow.month(), utcNow.day(),
                                 utcNow.hour(), utcNow.minute(), utcNow.second());
   SunPos   sun      = sunPosition(gpsLat, gpsLon, JD);
-  float    elevation = (float)sun.elevation;
+  float    el = (float)sun.elevation;
 
   // ------- PHASE  1 -------
   filter_rotation(pos1);
   for (int i =0; i<BLOCKS_PER_PHASE; i++) {
     float mean_ch0, stddev_ch0, mean_ch1, stddev_ch1;
     measurement(mean_ch0, stddev_ch0, mean_ch1, stddev_ch1);
-    storeMeasurement(elevation, mean_ch0, stddev_ch0, mean_ch1, stddev_ch1);
+    storeMeasurement(el, mean_ch0, stddev_ch0, mean_ch1, stddev_ch1);
     DateTime nowLocal = DateTime(rtc.now().unixtime() + UTC_OFFSET_HOURS * 3600UL);
     drawScreen(nowLocal, sun, mean_ch0, stddev_ch0, mean_ch1, stddev_ch1);
   }
@@ -199,7 +193,7 @@ void loop() {
   for (int i =0; i<BLOCKS_PER_PHASE; i++) {
     float mean_ch0, stddev_ch0, mean_ch1, stddev_ch1;
     measurement(mean_ch0, stddev_ch0, mean_ch1, stddev_ch1);
-    storeMeasurement(elevation, mean_ch0, stddev_ch0, mean_ch1, stddev_ch1);
+    storeMeasurement(el, mean_ch0, stddev_ch0, mean_ch1, stddev_ch1);
     DateTime nowLocal = DateTime(rtc.now().unixtime() + UTC_OFFSET_HOURS * 3600UL);
     drawScreen(nowLocal, sun, mean_ch0, stddev_ch0, mean_ch1, stddev_ch1);
   }
@@ -222,7 +216,6 @@ void loop() {
       Serial.println("]");
     }
     Serial.println("---- DATA END ----");
-    endTime = millis();
 
     // ------- SEND DATA OVER WIFI (before freeing the buffer) -------
     displayMessage("Sending data...");
@@ -236,14 +229,12 @@ void loop() {
       measurements = NULL;
     }
 
-    // Play the sunset BEFORE tearing down SPI — the TFT shares that bus, so it
-    // must run while the bus (and EN power) are still up. Then blank the screen.
     splashSunset();
     displayOff();
 
     adc1.sendcmd(CMD_STANDBY);
     delay(5);
-    // Disable SPI peripheral
+
     adc1.end();
     // Tri-state SPI pins
     digitalWrite(ADC_CS, LOW);
@@ -251,13 +242,10 @@ void loop() {
     digitalWrite(ADC_MOSI, LOW);
 
     filter_rotation(pos1);
-    // Power down analog board
+
     digitalWrite(EN, LOW);
-    Serial.println("System powered down.");
-    while (1) {
-      Serial.println("Go to sleep!");
-      delay(1000);
-    }
+    Serial.println("Going into deep sleep...");
+    esp_deep_sleep_start();
   }
 }
 
@@ -299,15 +287,17 @@ void filter_rotation(int pos) {
   Serial.print("Filter in position ");
   Serial.println(pos);
 
+  filter_servo.attach(S0);
   filter_servo.write(pos);
   delay(SERVO_SETTLE_TIME);
+  filter_servo.detach();
 
   adc1.sendcmd(CMD_WAKEUP);
   delay(10);
 }
 
 // ---------------- OFFSET CALIBRATION ----------------
-void offsetCalibration() {
+void offsetCalibration(float &offset_v0, float &offset_v1) {
   int32_t m0 = 0;
   int32_t m1 = 0;
   int collected = 0;
@@ -329,8 +319,8 @@ void offsetCalibration() {
   adc1.setChannelOffsetCalibration(0, m0);
   adc1.setChannelOffsetCalibration(1, m1);
 
-  float offset_v0 = m0 / FS * PREF_ADC;
-  float offset_v1 = m1 / FS * PREF_ADC;
+  offset_v0 = m0 / FS * PREF_ADC;
+  offset_v1 = m1 / FS * PREF_ADC;
 
   Serial.print("Reference voltage: ");
   Serial.print(Vref);
@@ -350,8 +340,6 @@ void measurement(float &mean_v0, float &stddev_v0, float &mean_v1, float &stddev
   double s1 = 0;
   int collected = 0;
 
-  // Bail out if the ADC stops producing DRDY interrupts (e.g. analog board
-  // disconnected) so the loop never hangs after the boot animation.
   unsigned long t0 = millis();
   while (collected < SAMPLES_PER_BLOCK) {
 
@@ -373,7 +361,7 @@ void measurement(float &mean_v0, float &stddev_v0, float &mean_v1, float &stddev
       collected++;
     }
     if (millis() - t0 > 2000) {   // ADC not responding
-      Serial.println("ADC timeout: no DRDY (analog board connected?)");
+      Serial.println("ADC timeout: no DRDY (analog board disconnected?)");
       break;
     }
   }
@@ -399,11 +387,11 @@ void measurement(float &mean_v0, float &stddev_v0, float &mean_v1, float &stddev
 }
 
 // ---------------- STORE ----------------
-void storeMeasurement(float elevation, float a, float b, float c, float d) {
+void storeMeasurement(float el, float a, float b, float c, float d) {
   if (measurement_index >= MAX_SUBLISTS)
     return;
 
-  measurements[measurement_index][0] = elevation;
+  measurements[measurement_index][0] = el;
   measurements[measurement_index][1] = a;
   measurements[measurement_index][2] = b;
   measurements[measurement_index][3] = c;
@@ -411,16 +399,6 @@ void storeMeasurement(float elevation, float a, float b, float c, float d) {
 
   measurement_index++;
   cal_cycles++;
-}
-
-void storeOffset(float a, float b, float c, float d) {
-  if (measurement_index >= MAX_SUBLISTS)
-    return;
-
-  measurements[measurement_index][1] = a;
-  measurements[measurement_index][2] = b;
-  measurements[measurement_index][3] = c;
-  measurements[measurement_index][4] = d;
 }
 
 // ---------------- GPS POLL + RTC SYNC ----------------

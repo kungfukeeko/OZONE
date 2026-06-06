@@ -39,7 +39,6 @@
 
 // ---------------- HARDWARE OBJECTS ----------------
 ADS131M04 adc1;        //objekt ADC-a
-adcOutput adc_podatak; //output tip, pristup kanalima 0-3, status
 Servo filter_servo;
 
 RTC_DS3231      rtc;
@@ -49,22 +48,19 @@ Preferences     prefs;
 
 // ---------------- STATE ----------------
 uint8_t cal_cycles = 0;
-// -------- FILTER SERVO POSITIONS --------
-int pos1 = 10;
-int pos2 = 180;
-int pos_cal = 100;
+// -------- FILTER SERVO POSITIONS (servo pulse width, microseconds) --------
+// 400 / 2600 are the ends of the widened SG90 range; pos_cal sits halfway.
+// If the servo buzzes/stalls at an end, back these off (e.g. 500 / 2500).
+int pos1    = 400;
+int pos2    = 2600;
+int pos_cal = 1500;
 
 // SKALA
-int32_t neg_scale = -8388608;
-int32_t pos_scale = 8388607;
 float FS = 8388608.0;
-
-float NREF_ADC = -1200.0;
 float PREF_ADC = 1200.0;
 
 double Vch0;
 double Vch1;
-double Vch2;
 float Vref = 101.75; //izmjereno stolnim DMM-mom dok je uređaj napajan USB-C kabelom, 101.13 mV kad je napajan baterijom
 
 // GPS / sun-position state
@@ -72,6 +68,7 @@ double gpsLat = 0.0, gpsLon = 0.0;
 bool   hasFix       = false;
 bool   hasStoredPos = false;  // true if NVS holds coordinates from a previous GPS fix
 bool   rtcSyncedGPS = false;
+bool   gpsAwake     = true;   // false once we've fixed and put the GPS into backup
 
 // ---------------- INTERRUPT ----------------
 volatile uint16_t drdy_div = 0;
@@ -96,6 +93,7 @@ void   offsetCalibration(float &offset_v0, float &offset_v1);
 void   measurement(float &mean_ch0, float &sttdev_ch0, float &mean_ch1, float &sttdev_ch1);
 void   storeMeasurement(float el, float a, float b, float c, float d);
 
+static void gpsEnterBackup();
 void   pollGPS();
 double toRad(double d);
 double toDeg(double r);
@@ -160,7 +158,10 @@ void setup() {
     Serial.println("Memory allocation failed!");
     while (1);
   }
-  delay(800);
+  // Boot animation is done — drop the core clock for the long measurement phase.
+  // APB stays at 80 MHz, so SPI/ADC, servo PWM, UART/GPS and WiFi are unaffected.
+  setCpuFrequencyMhz(80);
+
   Serial.println("---- MEASUREMENTS START ----");
   // ------- OFFSET CALIBRATION -------
   filter_rotation(pos_cal);
@@ -284,11 +285,12 @@ void filter_rotation(int pos) {
   adc1.sendcmd(CMD_STANDBY);
   delay(10);
 
-  Serial.print("Filter in position ");
-  Serial.println(pos);
+  Serial.print("Filter to ");
+  Serial.print(pos);
+  Serial.println(" us");
 
-  filter_servo.attach(S0);
-  filter_servo.write(pos);
+  filter_servo.attach(S0, 400, 2600);   // explicit range so writeMicroseconds isn't clamped
+  filter_servo.writeMicroseconds(pos);
   delay(SERVO_SETTLE_TIME);
   filter_servo.detach();
 
@@ -302,6 +304,7 @@ void offsetCalibration(float &offset_v0, float &offset_v1) {
   int32_t m1 = 0;
   int collected = 0;
 
+  unsigned long t0 = millis();
   while (collected < SAMPLES_FOR_CAL) {
     if (drdy_fall) {
       drdy_fall = false;
@@ -314,6 +317,10 @@ void offsetCalibration(float &offset_v0, float &offset_v1) {
       int32_t delta1 = temp.ch1 - m1;
       m1 += delta1 / (collected + 1);
       collected++;
+    }
+    if (millis() - t0 > 3000) {   // ADC not responding — don't hang (and drain) here
+      Serial.println("ADC timeout during offset calibration");
+      break;
     }
   }
   adc1.setChannelOffsetCalibration(0, m0);
@@ -403,30 +410,47 @@ void storeMeasurement(float el, float a, float b, float c, float d) {
 
 // ---------------- GPS POLL + RTC SYNC ----------------
 void pollGPS() {
+  if (!gpsAwake) return;   // already fixed + in backup -> nothing to do
+
   while (gpsSerial.available())
     gps.encode(gpsSerial.read());
 
-  if (gps.location.isValid()) {
+  // A real fix carries position AND UTC time together. Save both, then sleep the
+  // GPS for the rest of the run. (location.isValid() guards against the pre-fix
+  // garbage time the module spits out, e.g. year 2043.)
+  if (gps.location.isValid() && gps.date.isValid() && gps.time.isValid()) {
     gpsLat = gps.location.lat();
     gpsLon = gps.location.lng();
-    if (!hasFix) {
-      prefs.begin("ozone", false);
-      prefs.putDouble("lat", gpsLat);
-      prefs.putDouble("lon", gpsLon);
-      prefs.putBool("valid", true);
-      prefs.end();
-      hasStoredPos = true;
-    }
+    prefs.begin("ozone", false);
+    prefs.putDouble("lat", gpsLat);
+    prefs.putDouble("lon", gpsLon);
+    prefs.putBool("valid", true);
+    prefs.end();
+    hasStoredPos = true;
     hasFix = true;
-  }
 
-  // Sync RTC from GPS UTC once on first valid fix.
-  // location.isValid() guards against pre-fix garbage time (year 2043).
-  if (!rtcSyncedGPS && gps.location.isValid() && gps.date.isValid() && gps.time.isValid()) {
     rtc.adjust(DateTime(gps.date.year(), gps.date.month(), gps.date.day(),
                         gps.time.hour(), gps.time.minute(), gps.time.second()));
     rtcSyncedGPS = true;
+
+    gpsEnterBackup();   // location fixed -> put GPS to sleep
   }
+}
+
+// UBX-RXM-PMREQ: put the NEO-M8N into backup mode (software standby, ~uA) until
+// the next power cycle. Sent over the existing TX -> GPS-RX line; the module
+// cold-starts normally on the next power-up.
+static void gpsEnterBackup() {
+  const uint8_t pmreq[] = {
+    0xB5, 0x62, 0x02, 0x41, 0x08, 0x00,   // header: RXM-PMREQ, 8-byte payload
+    0x00, 0x00, 0x00, 0x00,               // duration = 0 (infinite)
+    0x02, 0x00, 0x00, 0x00,               // flags = backup
+    0x4D, 0x3B                            // checksum
+  };
+  gpsSerial.write(pmreq, sizeof(pmreq));
+  gpsSerial.flush();        // ensure it's transmitted before we stop polling
+  gpsAwake = false;
+  Serial.println("GPS: fix done -> backup (sleep) command sent");
 }
 
 // ---------------- MATH HELPERS ----------------

@@ -158,10 +158,13 @@ void setup() {
     Serial.println("Memory allocation failed!");
     while (1);
   }
+<<<<<<< HEAD
   // Boot animation is done — drop the core clock for the long measurement phase.
   // APB stays at 80 MHz, so SPI/ADC, servo PWM, UART/GPS and WiFi are unaffected.
   setCpuFrequencyMhz(80);
 
+=======
+>>>>>>> 126a8a764793014c7f5f4097d8bff3844bf2580e
   Serial.println("---- MEASUREMENTS START ----");
   // ------- OFFSET CALIBRATION -------
   filter_rotation(pos_cal);

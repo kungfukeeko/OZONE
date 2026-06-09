@@ -1,13 +1,11 @@
 #pragma once
 #include <Arduino.h>
-#include <RTClib.h>   // DateTime
-
-// Sun position result — shared between the solar math (main sketch) and the display.
-struct SunPos { double elevation; double azimuth; };
+#include <RTClib.h>          // DateTime
+#include "SolarCalculator.h" // SunPos
 
 // App state owned by the main sketch, read by the display module.
 extern double gpsLat, gpsLon;
-extern bool   hasFix, hasStoredPos, rtcSyncedGPS;
+extern bool   hasFix, hasStoredPos, rtcSyncedGPS, gpsAwake;
 
 // ---------------- Display API ----------------
 void displayInit();                  // power TFT/I2C rail, init panel, clear screen

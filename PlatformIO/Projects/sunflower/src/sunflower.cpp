@@ -1,99 +1,90 @@
 #include <Arduino.h>
-#include <ESP32Servo.h>
+#include <ESP32Servo.h> // include Servo library
 
-// ----------------------------------------------------------------------------
-// LDR sun tracker — proportional control.
-// Four LDRs in a 2x2 grid behind a cross/shade so the four quadrants get
-// unequal light unless the sun is centred. We steer two servos to equalise them.
-//
-// Smoothness comes from: (1) step size proportional to how far off-centre the
-// sun is (big move when far, tiny when close), (2) a slew-rate cap so a large
-// error can't snap the servo, (3) EMA-filtered LDR readings to kill jitter, and
-// (4) a deadband so it stops hunting once centred.
-// ----------------------------------------------------------------------------
+Servo horizontal;   // horizontal servo
+float servoh;  // stand horizontal servo (float -> allows sub-degree, smooth moves)
 
-Servo horizontal;   // azimuth servo
-Servo vertical;     // elevation servo
+Servo vertical;     // vertical servo (MG90 metal gear)
+float servov;  // stand vertical servo
 
-// LDR pins
-const int ldrlt = A3;   // top-left
-const int ldrrt = A1;   // top-right
-const int ldrld = A0;   // down-left
-const int ldrrd = A2;   // down-right
+// LDR pin connections
+int ldrld = A0; //LDR down left
+int ldrrt = A1; //LDR top rigt
+int ldrrd = A2; //ldr down rigt
+int ldrlt = A3; //LDR top left
 
-// servo wiring
-const int H_PIN = 12;
-const int V_PIN = 13;
+// ---- proportional, momentum-limited motion (heavy mount, uncontrollable servo speed) ----
+// Step grows with how far off the sun is (fast search), shrinks to a creep near the sun
+// (smooth + precise), and is HARD-CAPPED so no single move builds dangerous momentum.
+// NOTE: step sizes below are in DEGREES, and were scaled x(1000/1800) when the us range
+// widened from 1000-2000 to 600-2400, so each step moves the mount the SAME physical
+// distance as before (us-per-deg went 5.6 -> 10). Re-scale again if you change the us range.
+float KP       = 0.003; // deg of step per ADC count of error. Bigger = quicker search.
+float MIN_STEP = 0.05;  // deg: smallest move -> keeps it inching the last bit (stays smooth/precise)
+float MAX_STEP = 0.55;   // deg: HARD CAP per step. Servo speed can't be set, so this is the momentum limit.
+const int US_MIN = 600, US_MAX = 2400; // full-ish travel; the 50-130 / 10-170 deg constrains are now
+                                        // the real limits. 90 deg -> 1500us (centre).
 
-// ---------------- tuning (start here) ----------------
-const float KP        = 0.012f;  // deg of correction per unit of LDR difference
-const float MAX_STEP  = 0.9f;    // max deg moved per update -> caps speed (smoothness)
-const int   DEADBAND  = 60;      // hold position if the imbalance is smaller than this
-const float EMA_ALPHA = 0.20f;   // LDR smoothing: lower = smoother but slower (0..1)
-const int   DT_MS     = 20;      // control update period (ms)
-
-// servo travel limits (degrees)
-const float H_MIN = 10.0f, H_MAX = 170.0f;
-const float V_MIN = 50.0f, V_MAX = 130.0f;
-
-// pulse range used for the servos (matches the widened SG90 range)
-const int US_MIN = 500, US_MAX = 2500;
-// ------------------------------------------------------
-
-float servoh = 90.0f, servov = 90.0f;     // current commanded angles (kept as float)
-float fLT = 0, fRT = 0, fLD = 0, fRD = 0;  // EMA-filtered LDR values
-bool  filterInit = false;
-
-// map an angle (0..180 deg) to a servo pulse width
-static int angleToUs(float deg) {
-  return (int)(US_MIN + (US_MAX - US_MIN) * (deg / 180.0f) + 0.5f);
+// map an angle (0..180 deg) to a servo pulse width. Same idea as write(), but in
+// microseconds so we can command fractions of a degree -> smooth motion.
+int angleToUs(float deg) {
+  return (int)(US_MIN + (US_MAX - US_MIN) * deg / 180.0 + 0.5);
 }
 
-// move a float servo position toward its target by a proportional, slew-limited
-// step, but only if the imbalance is outside the deadband. Returns new position.
-static float track(float pos, float err, float lo, float hi) {
-  if (fabsf(err) <= DEADBAND) return pos;            // centred enough -> hold (no hunting)
-  float step = constrain(KP * err, -MAX_STEP, MAX_STEP);
-  pos = constrain(pos + step, lo, hi);
-  return pos;
+// proportional step magnitude: big when far off, small when close, capped both ends.
+float stepFor(int err) {
+  return constrain(KP * abs(err), MIN_STEP, MAX_STEP);
 }
 
-void setup() {
+float START_H = 90;
+float START_V = 140;
+
+void setup()  {
   Serial.begin(115200);
-  horizontal.attach(H_PIN, US_MIN, US_MAX);
-  vertical.attach(V_PIN, US_MIN, US_MAX);
+  delay(1000);                       // power the servos during this window
+  horizontal.attach(12, US_MIN, US_MAX);
+  vertical.attach(13, US_MIN, US_MAX);
+
+  servoh = START_H;  servov = START_V;
   horizontal.writeMicroseconds(angleToUs(servoh));
   vertical.writeMicroseconds(angleToUs(servov));
 }
 
 void loop() {
-  int lt = analogRead(ldrlt);
-  int rt = analogRead(ldrrt);
-  int ld = analogRead(ldrld);
-  int rd = analogRead(ldrrd);
+  int lt = analogRead(ldrlt); // top left
+  int rt = analogRead(ldrrt); // top right
+  int ld = analogRead(ldrld); // down left
+  int rd = analogRead(ldrrd); // down rigt
 
-  // exponential moving average smooths sensor noise (seed on first pass)
-  if (!filterInit) { fLT = lt; fRT = rt; fLD = ld; fRD = rd; filterInit = true; }
-  fLT += EMA_ALPHA * (lt - fLT);
-  fRT += EMA_ALPHA * (rt - fRT);
-  fLD += EMA_ALPHA * (ld - fLD);
-  fRD += EMA_ALPHA * (rd - fRD);
+int dtime = 40; // loop period (ms): smaller = more responsive/smoother, but must stay >= one move's settle time or it overshoots & hunts
+                // analogRead(4)/20; 40
+int tol = 90;   // deadband (ADC counts): smaller = more precise on the sun, but too small makes it nod/hunt. Raise toward 80-100 if it nods.
+                // analogRead(5)/4;  80
 
-  float avt = (fLT + fRT) * 0.5f;   // top
-  float avd = (fLD + fRD) * 0.5f;   // bottom
-  float avl = (fLT + fLD) * 0.5f;   // left
-  float avr = (fRT + fRD) * 0.5f;   // right
+int avt = (lt + rt) / 2; // average value top
+int avd = (ld + rd) / 2; // average value down
+int avl = (lt + ld) / 2; // average value left
+int avr = (rt + rd) / 2; // average value right
 
-  // errors keep the original tracking direction:
-  //   brighter bottom (avd>avt) -> raise servov ; brighter right (avr>avl) -> raise servoh
-  float eVert  = avd - avt;
-  float eHoriz = avr - avl;
+int dvert = avt - avd; // check the diffirence of up and down
+int dhoriz = avl - avr;// check the diffirence og left and rigt
 
-  servov = track(servov, eVert,  V_MIN, V_MAX);
-  servoh = track(servoh, eHoriz, H_MIN, H_MAX);
-
+// check if the diffirence is in the tolerance else change vertical angle (proportional, capped step)
+if (abs(dvert) > tol)  {
+  float s = stepFor(dvert);
+  if (avd > avt)  { servov += s; }
+  else if (avd < avt) { servov -= s; }
+  servov = constrain(servov, 50, 130);
   vertical.writeMicroseconds(angleToUs(servov));
-  horizontal.writeMicroseconds(angleToUs(servoh));
+}
 
-  delay(DT_MS);
+// check if the diffirence is in the tolerance else change horizontal angle (proportional, capped step)
+if (abs(dhoriz) > tol)  {
+  float s = stepFor(dhoriz);
+  if (avl > avr)  { servoh -= s; }
+  else if (avl < avr) { servoh += s; }
+  servoh = constrain(servoh, 10, 170);
+  horizontal.writeMicroseconds(angleToUs(servoh));
+}
+delay(dtime);
 }

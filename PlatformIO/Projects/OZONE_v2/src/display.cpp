@@ -25,8 +25,9 @@
 #define C_SEP     0x2945  // dark divider
 #define C_CH1     0x07FF  // cyan
 #define C_CH2     0xFD20  // orange
-#define C_GPS_OK  0x07E0
-#define C_GPS_BAD 0xF800
+#define C_GPS_OK    0x07E0
+#define C_GPS_BAD   0xF800
+#define C_GPS_SLEEP 0x3C7F  // blue — fixed, GPS now in backup/sleep
 
 static Adafruit_ST7789 tft(&SPI, TFT_CS, TFT_DC, TFT_RST);
 
@@ -248,13 +249,18 @@ void drawScreen(const DateTime& now, const SunPos& sun,
   tft.setCursor(112, 5);
   tft.print(buf);
 
-  // GPS status dot: red=no fix, orange=fix/no sync, green=fix+RTC synced
-  uint16_t dotColor = !hasFix ? C_GPS_BAD : (rtcSyncedGPS ? C_GPS_OK : 0xFD20);
+  // GPS status dot: blue=fixed & asleep, green=fix+synced, orange=fix/no sync, red=no fix
+  uint16_t    dotColor;
+  const char* dotLabel;
+  if      (!gpsAwake)     { dotColor = C_GPS_SLEEP; dotLabel = "S"; }
+  else if (!hasFix)       { dotColor = C_GPS_BAD;   dotLabel = "?"; }
+  else if (rtcSyncedGPS)  { dotColor = C_GPS_OK;    dotLabel = "G"; }
+  else                    { dotColor = 0xFD20;      dotLabel = "g"; }
   tft.fillCircle(229, 12, 9, dotColor);
   tft.setTextSize(1);
   tft.setTextColor(0x0000);
   tft.setCursor(226, 8);
-  tft.print(!hasFix ? "?" : (rtcSyncedGPS ? "G" : "g"));
+  tft.print(dotLabel);
   tft.setTextSize(2);
 
   // ----- coordinates -----

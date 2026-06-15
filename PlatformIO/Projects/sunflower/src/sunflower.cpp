@@ -13,9 +13,13 @@ int ldrrt = A1; //LDR top rigt
 int ldrrd = A2; //ldr down rigt
 int ldrlt = A3; //LDR top left
 
-// ---- gentle motion (heavy mount: small constant moves, no sudden jumps) ----
-float stepDeg = 0.25; // deg moved per loop. SMALL & constant = smooth, low momentum, no sudden moves.
-                      // smaller = gentler/less shake (slower); larger = faster but more momentum. Keep it small.
+// ---- proportional, momentum-limited motion (heavy mount, uncontrollable servo speed) ----
+// Step grows with how far off the sun is (fast search), shrinks to a creep near the sun
+// (smooth + precise), and is HARD-CAPPED so no single move builds dangerous momentum.
+float KP       = 0.005; // deg of step per ADC count of error. Bigger = quicker search.
+float MIN_STEP = 0.15;  // deg: smallest move -> keeps it inching the last bit (stays smooth/precise)
+float MAX_STEP = 1.0;   // deg: HARD CAP per step. Servo speed can't be set, so this is the momentum limit.
+                        // Keep modest (the 4-deg step is what threw the mount). Raise toward ~1.5 for faster search.
 const int US_MIN = 1000, US_MAX = 2000; // pulse range. 90 deg -> 1500us (centre). Narrow on purpose so it
                                         // CANNOT over-travel and ram the gear stops.
 
@@ -23,6 +27,11 @@ const int US_MIN = 1000, US_MAX = 2000; // pulse range. 90 deg -> 1500us (centre
 // microseconds so we can command fractions of a degree -> smooth motion.
 int angleToUs(float deg) {
   return (int)(US_MIN + (US_MAX - US_MIN) * deg / 180.0 + 0.5);
+}
+
+// proportional step magnitude: big when far off, small when close, capped both ends.
+float stepFor(int err) {
+  return constrain(KP * abs(err), MIN_STEP, MAX_STEP);
 }
 
 void setup()  {
@@ -52,29 +61,21 @@ int avr = (rt + rd) / 2; // average value right
 int dvert = avt - avd; // check the diffirence of up and down
 int dhoriz = avl - avr;// check the diffirence og left and rigt
 
-// check if the diffirence is in the tolerance else change vertical angle (one small step)
+// check if the diffirence is in the tolerance else change vertical angle (proportional, capped step)
 if (abs(dvert) > tol)  {
-  if (avd > avt)  {
-    servov += stepDeg;
-    if (servov > 130) { servov = 130; }
-  }
-  else if (avd < avt) {
-    servov -= stepDeg;
-    if (servov < 50) { servov = 50; }
-  }
+  float s = stepFor(dvert);
+  if (avd > avt)  { servov += s; }
+  else if (avd < avt) { servov -= s; }
+  servov = constrain(servov, 50, 130);
   vertical.writeMicroseconds(angleToUs(servov));
 }
 
-// check if the diffirence is in the tolerance else change horizontal angle (one small step)
+// check if the diffirence is in the tolerance else change horizontal angle (proportional, capped step)
 if (abs(dhoriz) > tol)  {
-  if (avl > avr)  {
-    servoh -= stepDeg;
-    if (servoh < 10) { servoh = 10; }
-  }
-  else if (avl < avr) {
-    servoh += stepDeg;
-    if (servoh > 170) { servoh = 170; }
-  }
+  float s = stepFor(dhoriz);
+  if (avl > avr)  { servoh -= s; }
+  else if (avl < avr) { servoh += s; }
+  servoh = constrain(servoh, 10, 170);
   horizontal.writeMicroseconds(angleToUs(servoh));
 }
 delay(dtime);

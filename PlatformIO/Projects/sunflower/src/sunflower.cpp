@@ -29,6 +29,10 @@ const int US_MIN = 600, US_MAX = 2400; // full-ish travel; the 50-130 / 10-170 d
 // microseconds so we can command fractions of a degree -> smooth motion.
 int angleToUs(float deg) {
   return (int)(US_MIN + (US_MAX - US_MIN) * deg / 180.0 + 0.5);
+// map an angle (0..180 deg) to a servo pulse width. Same idea as write(), but in
+// microseconds so we can command fractions of a degree -> smooth motion.
+int angleToUs(float deg) {
+  return (int)(US_MIN + (US_MAX - US_MIN) * deg / 180.0 + 0.5);
 }
 
 // proportional step magnitude: big when far off, small when close, capped both ends.
@@ -84,7 +88,17 @@ if (abs(dhoriz) > tol)  {
   if (avl > avr)  { servoh -= s; }
   else if (avl < avr) { servoh += s; }
   servoh = constrain(servoh, 10, 170);
+}
+
+// check if the diffirence is in the tolerance else change horizontal angle (proportional, capped step)
+if (abs(dhoriz) > tol)  {
+  float s = stepFor(dhoriz);
+  if (avl > avr)  { servoh -= s; }
+  else if (avl < avr) { servoh += s; }
+  servoh = constrain(servoh, 10, 170);
   horizontal.writeMicroseconds(angleToUs(servoh));
+}
+delay(dtime);
 }
 delay(dtime);
 }

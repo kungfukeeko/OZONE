@@ -84,6 +84,14 @@ if (abs(dhoriz) > tol)  {
   if (avl > avr)  { servoh -= s; }
   else if (avl < avr) { servoh += s; }
   servoh = constrain(servoh, 10, 170);
+}
+
+// check if the diffirence is in the tolerance else change horizontal angle (proportional, capped step)
+if (abs(dhoriz) > tol)  {
+  float s = stepFor(dhoriz);
+  if (avl > avr)  { servoh -= s; }
+  else if (avl < avr) { servoh += s; }
+  servoh = constrain(servoh, 10, 170);
   horizontal.writeMicroseconds(angleToUs(servoh));
 }
 delay(dtime);

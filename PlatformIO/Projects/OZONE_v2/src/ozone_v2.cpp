@@ -2,6 +2,7 @@
 #include "ADS131M04.h"  // ADC object
 #include <ESP32Servo.h>
 #include <Wire.h>
+#include <Adafruit_BME280.h>  // temp/humidity/pressure sensor (I2C)
 #include <RTClib.h>
 #include <TinyGPSPlus.h>
 #include <Preferences.h>
@@ -43,6 +44,8 @@ ADS131M04 adc1;        //objekt ADC-a
 Servo filter_servo;
 
 RTC_DS3231      rtc;
+Adafruit_BME280 bme;          // shares the I2C bus with the DS3231
+bool            bmeOK = false;
 TinyGPSPlus     gps;
 HardwareSerial  gpsSerial(1);
 Preferences     prefs;
@@ -52,7 +55,7 @@ uint8_t cal_cycles = 0;
 // -------- FILTER SERVO POSITIONS (servo pulse width, microseconds) --------
 // 400 / 2600 are the ends of the widened SG90 range; pos_cal sits halfway.
 // If the servo buzzes/stalls at an end, back these off (e.g. 500 / 2500).
-int pos1    = 400;
+int pos1    = 550;
 int pos2    = 2600;
 int pos_cal = 1500;
 
@@ -86,6 +89,13 @@ void IRAM_ATTR adc_ready_interrupt() {
 // each row: elevation, mean_ch0, stddev_ch0, mean_ch1, stddev_ch1
 float (*measurements)[5] = NULL;
 size_t measurement_index = 0;
+
+// ---------------- MEASUREMENT-START METADATA (emitted as CSV header) ----------------
+char   startDate[11] = "";   // YYYY-MM-DD (local)
+char   startTime[9]  = "";   // HH:MM:SS  (local)
+double startLat = 0.0, startLon = 0.0;
+float  startTemp = 0, startHum = 0, startPress = 0;
+bool   startEnvValid = false;
 
 // ---------------- FUNCTION PROTOTYPES ----------------
 void   setup_ADC_CARD();
@@ -134,6 +144,11 @@ void setup() {
     rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
   }
 
+  // BME280 on the same I2C bus (modules are usually 0x76, Adafruit boards 0x77).
+  // Non-fatal: if it's missing we just skip the print and keep measuring.
+  bmeOK = bme.begin(0x76) || bme.begin(0x77);
+  if (!bmeOK) Serial.println("BME280 not found (skipping env print)");
+
   // load last known coordinates from flash so sun position shows before a fix
   prefs.begin("ozone", true);  // read-only
   gpsLat = prefs.getDouble("lat", 0.0);
@@ -141,6 +156,8 @@ void setup() {
   hasStoredPos = prefs.getBool("valid", false);
   prefs.end();
 
+  gpsSerial.setRxBufferSize(4096);   // ~4 s of NMEA headroom (must precede begin) so the
+                                     // FIFO doesn't overflow between pollGPS() services
   gpsSerial.begin(GPS_BAUD, SERIAL_8N1, GPS_RX, GPS_TX);
   Serial.println("GPS serial started, waiting for NMEA...");
 
@@ -159,6 +176,32 @@ void setup() {
   setCpuFrequencyMhz(80);
 
   Serial.println("---- MEASUREMENTS START ----");
+
+  // ------- MEASUREMENT-START METADATA (time / coordinates / environment) -------
+  // captured once, here, and emitted as the CSV header at upload time
+  DateTime startLocal = DateTime(rtc.now().unixtime() + UTC_OFFSET_HOURS * 3600UL);
+  snprintf(startDate, sizeof(startDate), "%04d-%02d-%02d",
+           startLocal.year(), startLocal.month(), startLocal.day());
+  snprintf(startTime, sizeof(startTime), "%02d:%02d:%02d",
+           startLocal.hour(), startLocal.minute(), startLocal.second());
+  startLat = gpsLat;   // fallback = last known position (flash); overwritten by the first live GPS fix in pollGPS()
+  startLon = gpsLon;
+
+  if (bmeOK) {
+    startTemp     = bme.readTemperature();
+    startHum      = bme.readHumidity();
+    startPress    = bme.readPressure() / 100.0F;
+    startEnvValid = true;
+  }
+
+  Serial.printf("Start: %s %s | lat %.6f lon %.6f\n", startDate, startTime, startLat, startLon);
+  if (startEnvValid) {
+    Serial.print("Temp: ");     Serial.print(startTemp);  Serial.print(" C  ; ");
+    Serial.print("Humidity: "); Serial.print(startHum);   Serial.print(" %  ; ");
+    Serial.print("Pressure: "); Serial.print(startPress); Serial.println(" hPa");
+  }
+
+
   // ------- OFFSET CALIBRATION -------
   filter_rotation(pos_cal);
   float offset_v0, offset_v1;
@@ -179,6 +222,7 @@ void loop() {
   // ------- PHASE  1 -------
   filter_rotation(pos1);
   for (int i =0; i<BLOCKS_PER_PHASE; i++) {
+    pollGPS();   // service the NMEA stream every block (~1 s) so a fix is actually recognised
     float mean_ch0, stddev_ch0, mean_ch1, stddev_ch1;
     measurement(mean_ch0, stddev_ch0, mean_ch1, stddev_ch1);
     storeMeasurement(el, mean_ch0, stddev_ch0, mean_ch1, stddev_ch1);
@@ -188,6 +232,7 @@ void loop() {
   // ------- PHASE  2 -------
   filter_rotation(pos2);
   for (int i =0; i<BLOCKS_PER_PHASE; i++) {
+    pollGPS();   // service the NMEA stream every block (~1 s) so a fix is actually recognised
     float mean_ch0, stddev_ch0, mean_ch1, stddev_ch1;
     measurement(mean_ch0, stddev_ch0, mean_ch1, stddev_ch1);
     storeMeasurement(el, mean_ch0, stddev_ch0, mean_ch1, stddev_ch1);
@@ -216,7 +261,11 @@ void loop() {
 
     // ------- SEND DATA OVER WIFI (before freeing the buffer) -------
     displayMessage("Sending data...");
-    bool sent = uploadMeasurementsCSV(measurements, MAX_SUBLISTS);
+    MeasurementMeta meta = {
+      startTime, startDate, startLat, startLon,
+      startEnvValid, startTemp, startHum, startPress
+    };
+    bool sent = uploadMeasurementsCSV(measurements, MAX_SUBLISTS, meta);
     displayMessage(sent ? "Upload done" : "Upload failed", sent);
     delay(1500);
 
@@ -300,7 +349,10 @@ void offsetCalibration(float &offset_v0, float &offset_v1) {
   int32_t m1 = 0;
   int collected = 0;
 
-  unsigned long t0 = millis();
+  // Watchdog on the GAP since the last sample, not total elapsed: drdy_fall only
+  // fires every 100 ADC samples (~50 ms), so collecting SAMPLES_FOR_CAL of them
+  // legitimately takes seconds. We only bail if DRDY genuinely stops.
+  unsigned long tLast = millis();
   while (collected < SAMPLES_FOR_CAL) {
     if (drdy_fall) {
       drdy_fall = false;
@@ -313,8 +365,9 @@ void offsetCalibration(float &offset_v0, float &offset_v1) {
       int32_t delta1 = temp.ch1 - m1;
       m1 += delta1 / (collected + 1);
       collected++;
+      tLast = millis();           // got data -> pet the watchdog
     }
-    if (millis() - t0 > 3000) {   // ADC not responding — don't hang (and drain) here
+    if (millis() - tLast > 2000) {   // no DRDY for 2 s -> ADC really not responding
       Serial.println("ADC timeout during offset calibration");
       break;
     }
@@ -417,6 +470,8 @@ void pollGPS() {
   if (gps.location.isValid() && gps.date.isValid() && gps.time.isValid()) {
     gpsLat = gps.location.lat();
     gpsLon = gps.location.lng();
+    startLat = gpsLat;   // first live fix -> this is what the CSV header reports
+    startLon = gpsLon;
     prefs.begin("ozone", false);
     prefs.putDouble("lat", gpsLat);
     prefs.putDouble("lon", gpsLon);

@@ -11,7 +11,7 @@ static const uint16_t PC_PORT   = SECRET_PC_PORT;
 static const uint32_t WIFI_TIMEOUT_MS = 15000;   // give up connecting after this
 static const uint32_t TCP_TIMEOUT_MS  = 5000;
 
-bool uploadMeasurementsCSV(const float (*rows)[5], size_t count) {
+bool uploadMeasurementsCSV(const float (*rows)[5], size_t count, const MeasurementMeta &meta) {
   Serial.print("WiFi: connecting to ");
   Serial.println(WIFI_SSID);
 
@@ -40,6 +40,20 @@ bool uploadMeasurementsCSV(const float (*rows)[5], size_t count) {
     WiFi.mode(WIFI_OFF);
     return false;
   }
+
+  // 3-row start-metadata header (values captured at measurement start)
+  char hdr[96];
+  snprintf(hdr, sizeof(hdr), "TIME: %s, DATE: %s", meta.timeStr, meta.dateStr);
+  client.println(hdr);
+  snprintf(hdr, sizeof(hdr), "LATITUDE: %.6f, LONGITUDE: %.6f", meta.lat, meta.lon);
+  client.println(hdr);
+  if (meta.envValid)
+    snprintf(hdr, sizeof(hdr), "TEMP: %.2f degC, HUMIDITY: %.2f %%, PRESSURE: %.2f hPa",
+             meta.tempC, meta.humidity, meta.pressureHPa);
+  else
+    snprintf(hdr, sizeof(hdr), "TEMP: NA, HUMIDITY: NA, PRESSURE: NA");
+  client.println(hdr);
+  client.println();   // blank line separates the metadata header from the data
 
   // CSV header + one row per line
   client.println("elevation,mean_ch0,stddev_ch0,mean_ch1,stddev_ch1");

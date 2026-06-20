@@ -40,7 +40,7 @@
 
 // ---------------- MEASUREMENT CONFIG ----------------
 // 2000 sublists, rotate filters every 10 sublists, calibrate every 200
-#define MAX_SUBLISTS 2000
+#define MAX_SUBLISTS 1000
 //#define MAX_CAL 200     // Kalibrira se samo jednom na početku mjerenja
 #define BLOCKS_PER_PHASE 10   // Koliko mjerenja prije okretanja filtera
 #define SAMPLES_PER_BLOCK 20  // Koliko sample-ova za jedno mjerenje
@@ -64,7 +64,7 @@ uint8_t cal_cycles = 0;
 // -------- FILTER SERVO POSITIONS (servo pulse width, microseconds) --------
 // 400 / 2600 are the ends of the widened SG90 range; pos_cal sits halfway
 int pos1    = 550;
-int pos2    = 2600;
+int pos2    = 2400;
 int pos_cal = 1500;
 
 // SKALA
@@ -280,7 +280,7 @@ void loop() {
       free(measurements);
       measurements = NULL;
     }
-
+    filter_rotation(pos1);
     splashSunset();
     displayOff();
 
@@ -292,8 +292,6 @@ void loop() {
     digitalWrite(ADC_CS, LOW);
     digitalWrite(ADC_SCK, LOW);
     digitalWrite(ADC_MOSI, LOW);
-
-    filter_rotation(pos1);
 
     digitalWrite(EN, LOW);
     Serial.println("Going into deep sleep...");

@@ -56,7 +56,7 @@ uint8_t cal_cycles = 0;
 // 400 / 2600 are the ends of the widened SG90 range; pos_cal sits halfway.
 // If the servo buzzes/stalls at an end, back these off (e.g. 500 / 2500).
 int pos1    = 550;
-int pos2    = 2600;
+int pos2    = 2400;
 int pos_cal = 1500;
 
 // SKALA

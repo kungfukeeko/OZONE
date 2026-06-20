@@ -19,10 +19,10 @@ const int US_MIN = 1000, US_MAX = 2000;   // 90 deg -> 1500us (centre)
 
 // ---- travel limits (deg) — adjust to the real rig ----
 const float H_MIN = 10, H_MAX = 170;
-const float V_MIN = 50, V_MAX = 140;
+const float V_MIN = 50, V_MAX = 150;
 
 // ---- rest / start position ----
-const float START_H = 90, START_V = 140;
+const float START_H = 90, START_V = 150;
 
 // ---- proportional, momentum-limited step ----
 const float KP       = 0.006f; // deg of step per ADC count of imbalance

@@ -1,0 +1,5 @@
+# never commit private credentials (WiFi/host config); commit secrets.example.h instead
+**/secrets.h
+
+# PlatformIO build output
+.pio/

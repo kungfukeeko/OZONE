@@ -40,12 +40,13 @@
 
 // ---------------- MEASUREMENT CONFIG ----------------
 // 2000 sublists, rotate filters every 10 sublists, calibrate every 200
-#define MAX_SUBLISTS 1000
+#define MAX_SUBLISTS 2000
 //#define MAX_CAL 200     // Kalibrira se samo jednom na početku mjerenja
 #define BLOCKS_PER_PHASE 10   // Koliko mjerenja prije okretanja filtera
-#define SAMPLES_PER_BLOCK 20  // Koliko sample-ova za jedno mjerenje
+#define SAMPLES_PER_BLOCK 20  // reported sub-samples per measurement block (sets the stored stddev)
+#define OVERSAMPLE 15         // ADC conversions averaged into each reported sub-sample (extra integration on top of hardware OSR)
 #define SAMPLES_FOR_CAL 100
-#define SERVO_SETTLE_TIME 1000
+#define SERVO_SETTLE_TIME 2000
 #define ADC_DISCARD_SAMPLES 5
 
 // ---------------- HARDWARE OBJECTS ----------------
@@ -63,8 +64,8 @@ Preferences     prefs;
 uint8_t cal_cycles = 0;
 // -------- FILTER SERVO POSITIONS (servo pulse width, microseconds) --------
 // 400 / 2600 are the ends of the widened SG90 range; pos_cal sits halfway
-int pos1    = 550;
-int pos2    = 2400;
+int pos1    = 650;
+int pos2    = 2600;
 int pos_cal = 1500;
 
 // SKALA
@@ -83,14 +84,11 @@ bool   rtcSyncedGPS = false;
 bool   gpsAwake     = true;   // false once we've fixed and put the GPS into backup
 
 // ---------------- INTERRUPT ----------------
-volatile uint16_t drdy_div = 0;
-volatile bool drdy_fall = false; //data ready, seta se interuptom
+// Flag EVERY conversion (no ÷100 decimation). measurement() reads each DRDY and
+// averages OVERSAMPLE of them per reported sub-sample, so no ADC data is wasted.
+volatile bool drdy_fall = false; //data ready, set by interrupt on every conversion
 void IRAM_ATTR adc_ready_interrupt() {
-    drdy_div++;
-    if (drdy_div >= 100) {
-        drdy_div = 0;
-        drdy_fall = true;
-    }
+    drdy_fall = true;
 }
 
 // ---------------- DYNAMIC STORAGE ----------------
@@ -117,6 +115,10 @@ void   pollGPS();
 
 // ---------------- SETUP ----------------
 void setup() {
+  // Drop the core clock for the long measurement phase.
+  // APB stays at 80 MHz, so SPI/ADC, servo PWM, UART/GPS and WiFi are unaffected.
+  setCpuFrequencyMhz(80);
+
   // Hold the analog board OFF long enough to discharge/cold-boot the ADC 
   pinMode(EN, OUTPUT);
   digitalWrite(EN, LOW);
@@ -161,14 +163,16 @@ void setup() {
   hasStoredPos = prefs.getBool("valid", false);
   prefs.end();
 
-  gpsSerial.setRxBufferSize(4096);   // ~4 s of NMEA headroom (must precede begin) so the
-                                     // FIFO doesn't overflow between pollGPS() services
+  // GPS is NOT polled this run -- coordinates were provisioned to flash and loaded above.
+  // Open the UART only to send the backup command, then leave the module asleep all run.
+  //gpsSerial.setRxBufferSize(4096);   // not needed: no NMEA is read here
   gpsSerial.begin(GPS_BAUD, SERIAL_8N1, GPS_RX, GPS_TX);
-  Serial.println("GPS serial started, waiting for NMEA...");
+  //Serial.println("GPS serial started, waiting for NMEA...");
+  Serial.println("GPS: using stored coordinates from flash; putting module to sleep");
+  gpsEnterBackup();   // <- load-from-flash + GPS asleep for the whole run
 
   setup_ADC_CARD();
   attachInterrupt(ADC_DRDY, adc_ready_interrupt, FALLING);
-  drdy_div  = 0;
   drdy_fall = false;
 
   measurements = (float (*)[5])malloc(MAX_SUBLISTS * sizeof(*measurements));
@@ -176,9 +180,6 @@ void setup() {
     Serial.println("Memory allocation failed!");
     while (1);
   }
-  // Drop the core clock for the long measurement phase.
-  // APB stays at 80 MHz, so SPI/ADC, servo PWM, UART/GPS and WiFi are unaffected.
-  setCpuFrequencyMhz(80);
 
   Serial.println("---- MEASUREMENTS START ----");
 
@@ -218,7 +219,7 @@ void loop() {
   if (++loopCount % 10 == 0) sunflowerFindSun(5000);
 
   // ------- SUN POSITION -------
-  pollGPS();
+  //pollGPS();
   DateTime utcNow   = rtc.now();
   double   JD       = julianDay(utcNow.year(), utcNow.month(), utcNow.day(),
                                 utcNow.hour(), utcNow.minute(), utcNow.second());
@@ -228,7 +229,7 @@ void loop() {
   // ------- PHASE  1 -------
   filter_rotation(pos1);
   for (int i =0; i<BLOCKS_PER_PHASE; i++) {
-    pollGPS();   // service the NMEA stream every block (~1 s) so a fix is actually recognised
+    //pollGPS();   // service the NMEA stream every block (~1 s) so a fix is actually recognised
     float mean_ch0, stddev_ch0, mean_ch1, stddev_ch1;
     measurement(mean_ch0, stddev_ch0, mean_ch1, stddev_ch1);
     storeMeasurement(el, mean_ch0, stddev_ch0, mean_ch1, stddev_ch1);
@@ -238,7 +239,7 @@ void loop() {
   // ------- PHASE  2 -------
   filter_rotation(pos2);
   for (int i =0; i<BLOCKS_PER_PHASE; i++) {
-    pollGPS();   // service the NMEA stream every block (~1 s) so a fix is actually recognised
+    //pollGPS();   // service the NMEA stream every block (~1 s) so a fix is actually recognised
     float mean_ch0, stddev_ch0, mean_ch1, stddev_ch1;
     measurement(mean_ch0, stddev_ch0, mean_ch1, stddev_ch1);
     storeMeasurement(el, mean_ch0, stddev_ch0, mean_ch1, stddev_ch1);
@@ -281,7 +282,6 @@ void loop() {
       measurements = NULL;
     }
     filter_rotation(pos1);
-    splashSunset();
     displayOff();
 
     adc1.sendcmd(CMD_STANDBY);
@@ -303,7 +303,7 @@ void loop() {
 // 2kHz 0b0000001100010010 , 4kHz 0b0000001100001110 , 8kHz 0b0000001100001010
 void setup_ADC_CARD() {
 
-  uint32_t ADC_CLOCK_REG = 0b0000011100010010; //High res, Oversampling ratio 4:2 512 oko 2khz, enable samo 0 i 1 ch 001 je 256
+  uint32_t ADC_CLOCK_REG = 0b0000011100011110; //High-res, OSR 16384 (~250 SPS, lowest noise); CH0/CH1/CH2 enabled (OSR field 100->111)
   uint32_t ADC_CFG_REG = 0b0000011000000000; //Delay before measurment begins, za kasnije mozda enable
   adc1.begin(ADC_SCK, ADC_MISO, ADC_MOSI, ADC_CS);
   adc1.sendcmd(CMD_RESET);
@@ -386,40 +386,59 @@ void offsetCalibration(float &offset_v0, float &offset_v1) {
   Serial.print(" mV   ");
   Serial.print(offset_v1);
   Serial.println(" mV");
+
+  // show the measured offsets on the TFT (same Ch1/Ch2 look as measurements),
+  // then hold them long enough to read before the first measurement screen
+  drawOffsetScreen(offset_v0, offset_v1);
+  delay(3000);
 }
 
 // ---------------- READ AND COMPUTE ----------------
+// Each reported sub-sample is the average of OVERSAMPLE consecutive conversions
+// (the ADC already oversamples in hardware at OSR 16384). The block mean is thus
+// built from SAMPLES_PER_BLOCK*OVERSAMPLE conversions, while the reported stddev is
+// the spread of the SAMPLES_PER_BLOCK averaged sub-samples (how steady the signal
+// was over the block, not single-conversion jitter).
 void measurement(float &mean_v0, float &stddev_v0, float &mean_v1, float &stddev_v1) {
-  double m0 = 0;
+  double m0 = 0;   // running mean  (Welford) over averaged sub-samples
   double m1 = 0;
-  double s0 = 0;
+  double s0 = 0;   // running M2     (Welford)
   double s1 = 0;
   int collected = 0;
 
-  unsigned long t0 = millis();
   while (collected < SAMPLES_PER_BLOCK) {
 
-    if (drdy_fall) {
-      drdy_fall = false;
-
-      adcOutput temp = adc1.readADC();
-      Vch0 = temp.ch0 / FS * PREF_ADC;
-      Vch1 = temp.ch1 / FS * PREF_ADC;
-
-      double delta0 = Vch0 - m0;
-      m0 += delta0 / (collected + 1);
-      s0 += delta0 * (Vch0 - m0);
-
-      double delta1 = Vch1 - m1;
-      m1 += delta1 / (collected + 1);
-      s1 += delta1 * (Vch1 - m1);
-
-      collected++;
+    // ---- build one low-noise sub-sample by averaging OVERSAMPLE conversions ----
+    double acc0 = 0, acc1 = 0;
+    int got = 0;
+    unsigned long t0 = millis();
+    while (got < OVERSAMPLE) {
+      if (drdy_fall) {
+        drdy_fall = false;
+        adcOutput temp = adc1.readADC();
+        acc0 += temp.ch0;          // accumulate raw counts (exact in double)
+        acc1 += temp.ch1;
+        got++;
+      }
+      if (millis() - t0 > 2000) {  // ADC not responding
+        Serial.println("ADC timeout: no DRDY (analog board disconnected?)");
+        break;
+      }
     }
-    if (millis() - t0 > 2000) {   // ADC not responding
-      Serial.println("ADC timeout: no DRDY (analog board disconnected?)");
-      break;
-    }
+    if (got == 0) break;           // ADC dead -> abandon the block
+
+    Vch0 = (acc0 / got) / FS * PREF_ADC;   // averaged counts -> mV
+    Vch1 = (acc1 / got) / FS * PREF_ADC;
+
+    double delta0 = Vch0 - m0;
+    m0 += delta0 / (collected + 1);
+    s0 += delta0 * (Vch0 - m0);
+
+    double delta1 = Vch1 - m1;
+    m1 += delta1 / (collected + 1);
+    s1 += delta1 * (Vch1 - m1);
+
+    collected++;
   }
   int denom = (collected > 1) ? (collected - 1) : 1;
   mean_v0 = m0;

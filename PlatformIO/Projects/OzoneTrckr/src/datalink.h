@@ -12,6 +12,10 @@ struct MeasurementMeta {
   float       tempC;
   float       humidity;     // %
   float       pressureHPa;  // hPa
+  float       offset0;      // offset-cal result ch0 (mV)
+  float       offset0Std;   // its stddev (mV)
+  float       offset1;      // offset-cal result ch1 (mV)
+  float       offset1Std;   // its stddev (mV)
 };
 
-bool uploadMeasurementsCSV(const float (*rows)[5], size_t count, const MeasurementMeta &meta);
+bool uploadMeasurementsCSV(const float (*rows)[6], size_t count, const MeasurementMeta &meta);

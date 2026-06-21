@@ -1,6 +1,7 @@
 #include "Arduino.h"
 #include "ADS131M04.h"  // ADC object
-#include <ESP32Servo.h>
+#include "ESP32Servo.h"
+#include "ESP32PWM.h"
 #include <Wire.h>
 #include <Adafruit_BME280.h>  // temp/humidity/pressure sensor (I2C)
 #include <RTClib.h>
@@ -46,8 +47,9 @@
 #define SAMPLES_PER_BLOCK 20  // reported sub-samples per measurement block (sets the stored stddev)
 #define OVERSAMPLE 15         // ADC conversions averaged into each reported sub-sample (extra integration on top of hardware OSR)
 #define SAMPLES_FOR_CAL 100
+#define WARMUP_MS 40000       // let the analog board settle before offset cal (warm-up curve was flat by ~6 s; 30 s gives cold-start margin)
 #define SERVO_SETTLE_TIME 2000
-#define ADC_DISCARD_SAMPLES 5
+#define ADC_DISCARD_SAMPLES 25  // conversions thrown away after each CMD_WAKEUP so the settling spike never lands in a measurement (~100 ms @ 250 SPS)
 
 // ---------------- HARDWARE OBJECTS ----------------
 ADS131M04 adc1;        //objekt ADC-a
@@ -65,7 +67,7 @@ uint8_t cal_cycles = 0;
 // -------- FILTER SERVO POSITIONS (servo pulse width, microseconds) --------
 // 400 / 2600 are the ends of the widened SG90 range; pos_cal sits halfway
 int pos1    = 650;
-int pos2    = 2600;
+int pos2    = 2500;
 int pos_cal = 1500;
 
 // SKALA
@@ -92,8 +94,8 @@ void IRAM_ATTR adc_ready_interrupt() {
 }
 
 // ---------------- DYNAMIC STORAGE ----------------
-// each row: elevation, mean_ch0, stddev_ch0, mean_ch1, stddev_ch1
-float (*measurements)[5] = NULL;
+// each row: elevation, mean_ch0, stddev_ch0, mean_ch1, stddev_ch1, temp_c
+float (*measurements)[6] = NULL;
 size_t measurement_index = 0;
 
 // ---------------- MEASUREMENT-START METADATA (emitted as CSV header) ----------------
@@ -103,12 +105,17 @@ double startLat = 0.0, startLon = 0.0;
 float  startTemp = 0, startHum = 0, startPress = 0;
 bool   startEnvValid = false;
 
+// offset-calibration result (mean +/- stddev, mV), emitted in the CSV header
+float  offsetCal0 = 0, offsetCal0Std = 0;
+float  offsetCal1 = 0, offsetCal1Std = 0;
+
 // ---------------- FUNCTION PROTOTYPES ----------------
 void   setup_ADC_CARD();
 void   filter_rotation(int pos);
+void   warmup(uint32_t ms);
 void   offsetCalibration(float &offset_v0, float &offset_v1);
 void   measurement(float &mean_ch0, float &sttdev_ch0, float &mean_ch1, float &sttdev_ch1);
-void   storeMeasurement(float el, float a, float b, float c, float d);
+void   storeMeasurement(float el, float a, float b, float c, float d, float t);
 
 static void gpsEnterBackup();
 void   pollGPS();
@@ -175,7 +182,7 @@ void setup() {
   attachInterrupt(ADC_DRDY, adc_ready_interrupt, FALLING);
   drdy_fall = false;
 
-  measurements = (float (*)[5])malloc(MAX_SUBLISTS * sizeof(*measurements));
+  measurements = (float (*)[6])malloc(MAX_SUBLISTS * sizeof(*measurements));
   if (!measurements) {
     Serial.println("Memory allocation failed!");
     while (1);
@@ -206,6 +213,8 @@ void setup() {
     Serial.print("Pressure: "); Serial.print(startPress); Serial.println(" hPa");
   }
 
+  // ------- WARM-UP (let the analog board settle before calibrating) -------
+  //warmup(WARMUP_MS);
 
   // ------- OFFSET CALIBRATION -------
   float offset_v0, offset_v1;
@@ -232,7 +241,8 @@ void loop() {
     //pollGPS();   // service the NMEA stream every block (~1 s) so a fix is actually recognised
     float mean_ch0, stddev_ch0, mean_ch1, stddev_ch1;
     measurement(mean_ch0, stddev_ch0, mean_ch1, stddev_ch1);
-    storeMeasurement(el, mean_ch0, stddev_ch0, mean_ch1, stddev_ch1);
+    float tC = bmeOK ? bme.readTemperature() : NAN;   // per-block temp for drift correlation
+    storeMeasurement(el, mean_ch0, stddev_ch0, mean_ch1, stddev_ch1, tC);
     DateTime nowLocal = DateTime(rtc.now().unixtime() + UTC_OFFSET_HOURS * 3600UL);
     drawScreen(nowLocal, sun, mean_ch0, stddev_ch0, mean_ch1, stddev_ch1);
   }
@@ -242,7 +252,8 @@ void loop() {
     //pollGPS();   // service the NMEA stream every block (~1 s) so a fix is actually recognised
     float mean_ch0, stddev_ch0, mean_ch1, stddev_ch1;
     measurement(mean_ch0, stddev_ch0, mean_ch1, stddev_ch1);
-    storeMeasurement(el, mean_ch0, stddev_ch0, mean_ch1, stddev_ch1);
+    float tC = bmeOK ? bme.readTemperature() : NAN;   // per-block temp for drift correlation
+    storeMeasurement(el, mean_ch0, stddev_ch0, mean_ch1, stddev_ch1, tC);
     DateTime nowLocal = DateTime(rtc.now().unixtime() + UTC_OFFSET_HOURS * 3600UL);
     drawScreen(nowLocal, sun, mean_ch0, stddev_ch0, mean_ch1, stddev_ch1);
   }
@@ -261,7 +272,8 @@ void loop() {
       Serial.print(measurements[i][1], 4); Serial.print(",");
       Serial.print(measurements[i][2], 4); Serial.print(",");
       Serial.print(measurements[i][3], 4); Serial.print(",");
-      Serial.print(measurements[i][4], 4);
+      Serial.print(measurements[i][4], 4); Serial.print(",");
+      Serial.print(measurements[i][5], 4);
       Serial.println("]");
     }
     Serial.println("---- DATA END ----");
@@ -270,7 +282,8 @@ void loop() {
     displayMessage("Sending data...");
     MeasurementMeta meta = {
       startTime, startDate, startLat, startLon,
-      startEnvValid, startTemp, startHum, startPress
+      startEnvValid, startTemp, startHum, startPress,
+      offsetCal0, offsetCal0Std, offsetCal1, offsetCal1Std
     };
     bool sent = uploadMeasurementsCSV(measurements, MAX_SUBLISTS, meta);
     displayMessage(sent ? "Upload done" : "Upload failed", sent);
@@ -343,49 +356,136 @@ void filter_rotation(int pos) {
 
   adc1.sendcmd(CMD_WAKEUP);
   delay(10);
+
+  drdy_fall = false;
+  int discarded = 0;
+  unsigned long t0 = millis();
+  while (discarded < ADC_DISCARD_SAMPLES) {
+    if (drdy_fall) {
+      drdy_fall = false;
+      adc1.readADC();
+      discarded++;
+    }
+    if (millis() - t0 > 2000) break;   // ADC not responding
+  }
+}
+
+// ---------------- WARM-UP ----------------
+// Let the analog board settle before offset calibration. ch1's amplifier offset
+// drifts for tens of seconds after power-on; calibrating too early bakes that drift
+// into the offset. Logs both channels once a second so the settling curve is visible
+// on the serial monitor; shorten WARMUP_MS once ch1 has plateaued.
+void warmup(uint32_t ms) {
+  Serial.printf("---- WARM-UP %lu s ----\n", (unsigned long)(ms / 1000UL));
+  unsigned long tStart = millis();
+  while (millis() - tStart < ms) {
+    // one OVERSAMPLE read of each channel -> mean +/- stddev (Welford, like measurement())
+    double m0 = 0, m1 = 0, s0 = 0, s1 = 0;
+    int got = 0;
+    unsigned long t0 = millis();
+    while (got < OVERSAMPLE) {
+      if (drdy_fall) {
+        drdy_fall = false;
+        adcOutput temp = adc1.readADC();
+        double d0 = temp.ch0 - m0; m0 += d0 / (got + 1); s0 += d0 * (temp.ch0 - m0);
+        double d1 = temp.ch1 - m1; m1 += d1 / (got + 1); s1 += d1 * (temp.ch1 - m1);
+        got++;
+      }
+      if (millis() - t0 > 2000) { Serial.println("ADC timeout during warm-up"); break; }
+    }
+    if (got == 0) break;
+    int dn = (got > 1) ? (got - 1) : 1;
+    float var0 = s0 / dn; if (var0 < 0) var0 = 0;
+    float var1 = s1 / dn; if (var1 < 0) var1 = 0;
+    float v0  = m0 / FS * PREF_ADC,            v1  = m1 / FS * PREF_ADC;
+    float sd0 = sqrt(var0) / FS * PREF_ADC,    sd1 = sqrt(var1) / FS * PREF_ADC;
+
+    unsigned long elapsed   = (millis() - tStart) / 1000UL;
+    unsigned long remaining = (ms - (millis() - tStart)) / 1000UL;
+    Serial.printf("warmup t=%3lus  ch0=%8.3f +/- %.3f mV  ch1=%8.3f +/- %.3f mV\n",
+                  elapsed, v0, sd0, v1, sd1);
+
+    char buf[64];
+    snprintf(buf, sizeof(buf), "Warm-up %lus\nch0 %.2f+-%.2f\nch1 %.2f+-%.2f",
+             remaining, v0, sd0, v1, sd1);
+    displayMessage(buf);
+
+    delay(1000);
+  }
 }
 
 // ---------------- OFFSET CALIBRATION ----------------
 void offsetCalibration(float &offset_v0, float &offset_v1) {
-  int32_t m0 = 0;
-  int32_t m1 = 0;
+  // Same scheme as measurement(): each sub-sample is the average of OVERSAMPLE
+  // conversions, and we run Welford over the sub-samples to get a mean (used for
+  // the offset) plus a stddev (how noisy the zero-input is). Means are kept in raw
+  // counts so the hardware offset register gets the right value.
+  double m0 = 0, m1 = 0;   // running mean (Welford) over averaged sub-samples, raw counts
+  double s0 = 0, s1 = 0;   // running M2     (Welford)
   int collected = 0;
 
-  // Watchdog on the GAP since the last sample
-  unsigned long tLast = millis();
   while (collected < SAMPLES_FOR_CAL) {
-    if (drdy_fall) {
-      drdy_fall = false;
 
-      adcOutput temp = adc1.readADC();
-
-      int32_t delta0 = temp.ch0 - m0;
-      m0 += delta0 / (collected + 1);
-
-      int32_t delta1 = temp.ch1 - m1;
-      m1 += delta1 / (collected + 1);
-      collected++;
-      tLast = millis();           // got data -> pet the watchdog
+    // ---- build one low-noise sub-sample by averaging OVERSAMPLE conversions ----
+    double acc0 = 0, acc1 = 0;
+    int got = 0;
+    unsigned long t0 = millis();
+    while (got < OVERSAMPLE) {
+      if (drdy_fall) {
+        drdy_fall = false;
+        adcOutput temp = adc1.readADC();
+        acc0 += temp.ch0;
+        acc1 += temp.ch1;
+        got++;
+      }
+      if (millis() - t0 > 2000) {   // no DRDY for 2 s -> ADC really not responding
+        Serial.println("ADC timeout during offset calibration");
+        break;
+      }
     }
-    if (millis() - tLast > 2000) {   // no DRDY for 2 s -> ADC really not responding
-      Serial.println("ADC timeout during offset calibration");
-      break;
-    }
+    if (got == 0) break;            // ADC dead -> abandon calibration
+
+    double c0 = acc0 / got;         // averaged raw counts
+    double c1 = acc1 / got;
+
+    double delta0 = c0 - m0;
+    m0 += delta0 / (collected + 1);
+    s0 += delta0 * (c0 - m0);
+
+    double delta1 = c1 - m1;
+    m1 += delta1 / (collected + 1);
+    s1 += delta1 * (c1 - m1);
+
+    collected++;
   }
-  adc1.setChannelOffsetCalibration(0, m0);
-  adc1.setChannelOffsetCalibration(1, m1);
+  adc1.setChannelOffsetCalibration(0, (int32_t)lround(m0));
+  adc1.setChannelOffsetCalibration(1, (int32_t)lround(m1));
 
   offset_v0 = m0 / FS * PREF_ADC;
   offset_v1 = m1 / FS * PREF_ADC;
+
+  int denom = (collected > 1) ? (collected - 1) : 1;
+  float var0 = s0 / denom; if (var0 < 0) var0 = 0;
+  float var1 = s1 / denom; if (var1 < 0) var1 = 0;
+  float std_v0 = sqrt(var0) / FS * PREF_ADC;   // offset noise, mV
+  float std_v1 = sqrt(var1) / FS * PREF_ADC;
 
   Serial.print("Reference voltage: ");
   Serial.print(Vref);
   Serial.println(" mV");
   Serial.print("Offset Calibration: ");
   Serial.print(offset_v0);
+  Serial.print(" +/- ");
+  Serial.print(std_v0);
   Serial.print(" mV   ");
   Serial.print(offset_v1);
+  Serial.print(" +/- ");
+  Serial.print(std_v1);
   Serial.println(" mV");
+
+  // keep the result for the CSV header (emitted by uploadMeasurementsCSV)
+  offsetCal0 = offset_v0; offsetCal0Std = std_v0;
+  offsetCal1 = offset_v1; offsetCal1Std = std_v1;
 
   // show the measured offsets on the TFT (same Ch1/Ch2 look as measurements),
   // then hold them long enough to read before the first measurement screen
@@ -462,7 +562,7 @@ void measurement(float &mean_v0, float &stddev_v0, float &mean_v1, float &stddev
 }
 
 // ---------------- STORE ----------------
-void storeMeasurement(float el, float a, float b, float c, float d) {
+void storeMeasurement(float el, float a, float b, float c, float d, float t) {
   if (measurement_index >= MAX_SUBLISTS)
     return;
 
@@ -471,6 +571,7 @@ void storeMeasurement(float el, float a, float b, float c, float d) {
   measurements[measurement_index][2] = b;
   measurements[measurement_index][3] = c;
   measurements[measurement_index][4] = d;
+  measurements[measurement_index][5] = t;
 
   measurement_index++;
   cal_cycles++;

@@ -1,5 +1,6 @@
 #include "sunflower.h"
-#include <ESP32Servo.h>
+#include "ESP32Servo.h"
+#include "ESP32PWM.h"
 
 static int H_PIN, V_PIN;                  // horizontal / vertical servo
 static int ldrlt, ldrrt, ldrld, ldrrd;    // top-left / top-right / bottom-left / bottom-right

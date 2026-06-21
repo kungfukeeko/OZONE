@@ -11,7 +11,7 @@ static const uint16_t PC_PORT   = SECRET_PC_PORT;
 static const uint32_t WIFI_TIMEOUT_MS = 15000;   // give up connecting after this
 static const uint32_t TCP_TIMEOUT_MS  = 5000;
 
-bool uploadMeasurementsCSV(const float (*rows)[5], size_t count, const MeasurementMeta &meta) {
+bool uploadMeasurementsCSV(const float (*rows)[6], size_t count, const MeasurementMeta &meta) {
   Serial.print("WiFi: connecting to ");
   Serial.println(WIFI_SSID);
 
@@ -53,14 +53,16 @@ bool uploadMeasurementsCSV(const float (*rows)[5], size_t count, const Measureme
   else
     snprintf(hdr, sizeof(hdr), "TEMP: NA, HUMIDITY: NA, PRESSURE: NA");
   client.println(hdr);
-  client.println();   // blank line separates the metadata header from the data
+  snprintf(hdr, sizeof(hdr), "OFFSET CAL: %.4f +/- %.4f mV, %.4f +/- %.4f mV",
+           meta.offset0, meta.offset0Std, meta.offset1, meta.offset1Std);
+  client.println(hdr);   // 4th header row (was blank): offset-cal result
 
   // CSV header + one row per line
-  client.println("elevation,mean_ch0,stddev_ch0,mean_ch1,stddev_ch1");
-  char line[96];
+  client.println("elevation,mean_ch0,stddev_ch0,mean_ch1,stddev_ch1,temp_c");
+  char line[112];
   for (size_t i = 0; i < count; i++) {
-    snprintf(line, sizeof(line), "%.4f,%.4f,%.4f,%.4f,%.4f",
-             rows[i][0], rows[i][1], rows[i][2], rows[i][3], rows[i][4]);
+    snprintf(line, sizeof(line), "%.4f,%.4f,%.4f,%.4f,%.4f,%.4f",
+             rows[i][0], rows[i][1], rows[i][2], rows[i][3], rows[i][4], rows[i][5]);
     client.println(line);
   }
   client.flush();

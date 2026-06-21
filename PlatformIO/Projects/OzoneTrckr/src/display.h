@@ -16,3 +16,4 @@ void displayOff();                   // blank the panel and switch the backlight
 void displayMessage(const char* msg, bool ok = true);  // full-screen status (green ok / red fail)
 void drawScreen(const DateTime& now, const SunPos& sun,
                 float m0, float sd0, float m1, float sd1);  // live measurement dashboard
+void drawOffsetScreen(float off0, float off1);              // one-shot: offset-calibration result (mV)

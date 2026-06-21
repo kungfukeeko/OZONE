@@ -313,6 +313,39 @@ void drawScreen(const DateTime& now, const SunPos& sun,
   tft.print(buf);
 }
 
+// ================================================================== OFFSET SCREEN
+// Shown once right after offset calibration, before measurements begin. Uses the
+// same Ch1/Ch2 look (cyan/orange) as the live dashboard so the offsets read the
+// same way the measured voltages will.
+void drawOffsetScreen(float off0, float off1) {
+  char buf[40];
+  tft.fillScreen(C_BG);
+  tft.setTextWrap(false);
+
+  tft.setTextSize(2);
+  tft.setTextColor(C_DATE);
+  tft.setCursor(4, 5);
+  tft.print("OFFSET CAL");
+
+  tft.drawFastHLine(0, 30, 240, C_SEP);
+
+  tft.setTextSize(1);
+  tft.setTextColor(C_LABEL);
+  tft.setCursor(4, 40);
+  tft.print("Zero-input offset [mV]");
+
+  tft.setTextSize(2);
+  tft.setTextColor(C_CH1);
+  snprintf(buf, sizeof(buf), "Ch1:%9.4f", off0);
+  tft.setCursor(4, 70);
+  tft.print(buf);
+
+  tft.setTextColor(C_CH2);
+  snprintf(buf, sizeof(buf), "Ch2:%9.4f", off1);
+  tft.setCursor(4, 100);
+  tft.print(buf);
+}
+
 // ================================================================== INIT / ERROR
 void displayInit() {
   // power the TFT / I2C rail (also feeds the DS3231) before using the panel

@@ -40,15 +40,15 @@
 #define UTC_OFFSET_HOURS 2
 
 // ---------------- MEASUREMENT CONFIG ----------------
-// 2000 sublists, rotate filters every 10 sublists, calibrate every 200
-#define MAX_SUBLISTS 2000
+// 4000 sublists (around 1 hr 35 min), rotate filters every 10 sublists, calibrate every 200
+#define MAX_SUBLISTS 4000
 //#define MAX_CAL 200     // Kalibrira se samo jednom na početku mjerenja
 #define BLOCKS_PER_PHASE 10   // Koliko mjerenja prije okretanja filtera
 #define SAMPLES_PER_BLOCK 20  // reported sub-samples per measurement block (sets the stored stddev)
 #define OVERSAMPLE 15         // ADC conversions averaged into each reported sub-sample (extra integration on top of hardware OSR)
 #define SAMPLES_FOR_CAL 100
 #define WARMUP_MS 40000       // let the analog board settle before offset cal (warm-up curve was flat by ~6 s; 30 s gives cold-start margin)
-#define SERVO_SETTLE_TIME 2000
+#define SERVO_SETTLE_TIME 1000
 #define ADC_DISCARD_SAMPLES 25  // conversions thrown away after each CMD_WAKEUP so the settling spike never lands in a measurement (~100 ms @ 250 SPS)
 
 // ---------------- HARDWARE OBJECTS ----------------
@@ -66,9 +66,9 @@ Preferences     prefs;
 uint8_t cal_cycles = 0;
 // -------- FILTER SERVO POSITIONS (servo pulse width, microseconds) --------
 // 400 / 2600 are the ends of the widened SG90 range; pos_cal sits halfway
-int pos1    = 650;
-int pos2    = 2500;
-int pos_cal = 1500;
+int pos1    = 600;
+int pos2    = 2400;
+int pos_cal = 1450;
 
 // SKALA
 float FS = 8388608.0;
@@ -86,8 +86,6 @@ bool   rtcSyncedGPS = false;
 bool   gpsAwake     = true;   // false once we've fixed and put the GPS into backup
 
 // ---------------- INTERRUPT ----------------
-// Flag EVERY conversion (no ÷100 decimation). measurement() reads each DRDY and
-// averages OVERSAMPLE of them per reported sub-sample, so no ADC data is wasted.
 volatile bool drdy_fall = false; //data ready, set by interrupt on every conversion
 void IRAM_ATTR adc_ready_interrupt() {
     drdy_fall = true;
@@ -122,8 +120,6 @@ void   pollGPS();
 
 // ---------------- SETUP ----------------
 void setup() {
-  // Drop the core clock for the long measurement phase.
-  // APB stays at 80 MHz, so SPI/ADC, servo PWM, UART/GPS and WiFi are unaffected.
   setCpuFrequencyMhz(80);
 
   // Hold the analog board OFF long enough to discharge/cold-boot the ADC 
@@ -155,23 +151,36 @@ void setup() {
     displayError("DS3231 ERROR");
     while (1) delay(1000);
   }
-  if (rtc.lostPower() || rtc.now().year() < 2024 || rtc.now().year() > 2035) {
-    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+  {
+    char buildStamp[24];
+    snprintf(buildStamp, sizeof(buildStamp), "%s %s", __DATE__, __TIME__);
+    prefs.begin("ozone", false);
+    bool newBuild = (prefs.getString("build", "") != String(buildStamp));
+    if (newBuild || rtc.lostPower()) {
+      rtc.adjust(DateTime(F(__DATE__), F(__TIME__)) - TimeSpan(UTC_OFFSET_HOURS * 3600L));
+      prefs.putString("build", buildStamp);
+      Serial.println("RTC set from build time (fresh flash or lost power)");
+    } else {
+      Serial.println("RTC kept (same firmware -> trusting its running time)");
+    }
+    prefs.end();
   }
 
   // BME280 on the same I2C bus (modules are usually 0x76, Adafruit boards 0x77).
   bmeOK = bme.begin(0x76) || bme.begin(0x77);
   if (!bmeOK) Serial.println("BME280 not found (skipping env print)");
 
-  // load last known coordinates from flash so sun position shows before a fix
-  prefs.begin("ozone", true);  // read-only
-  gpsLat = prefs.getDouble("lat", 0.0);
-  gpsLon = prefs.getDouble("lon", 0.0);
-  hasStoredPos = prefs.getBool("valid", false);
-  prefs.end();
+  // GPS unavailable -> hardcode the measurement site (last known location).
+  gpsLat = 44.5302;
+  gpsLon = 14.4706;
+  hasStoredPos = true;
+  // --- restore this when GPS works again (reads the provisioned fix from flash): ---
+  // prefs.begin("ozone", true);  // read-only
+  // gpsLat = prefs.getDouble("lat", 0.0);
+  // gpsLon = prefs.getDouble("lon", 0.0);
+  // hasStoredPos = prefs.getBool("valid", false);
+  // prefs.end();
 
-  // GPS is NOT polled this run -- coordinates were provisioned to flash and loaded above.
-  // Open the UART only to send the backup command, then leave the module asleep all run.
   //gpsSerial.setRxBufferSize(4096);   // not needed: no NMEA is read here
   gpsSerial.begin(GPS_BAUD, SERIAL_8N1, GPS_RX, GPS_TX);
   //Serial.println("GPS serial started, waiting for NMEA...");

@@ -23,13 +23,16 @@
 #define ADC_MISO 37
 #define ADC_MOSI 35
 
+// onboard BOOT button (GPIO0): press during a run to end it early WITHOUT WiFi
+#define STOP_BTN 0
+
 // ---------------- SUN TRACKER (servos + quadrant LDRs) ----------------
 #define TRK_H_PIN 12   // horizontal (azimuth) servo
 #define TRK_V_PIN 13   // vertical (elevation) servo
-#define LDR_LT    A3   // LDR top-left
-#define LDR_RT    A1   // LDR top-right
 #define LDR_LD    A0   // LDR bottom-left
+#define LDR_RT    A1   // LDR top-right
 #define LDR_RD    A2   // LDR bottom-right
+#define LDR_LT    A3   // LDR top-left
 
 // ---------------- GPS (Serial1) ----------------
 // NEO-M8N TX -> GPIO2 (Feather RX), NEO-M8N RX <- GPIO1 (Feather TX)
@@ -41,15 +44,24 @@
 
 // ---------------- MEASUREMENT CONFIG ----------------
 // 4000 sublists (around 1 hr 35 min), rotate filters every 10 sublists, calibrate every 200
-#define MAX_SUBLISTS 4000
+#define MAX_SUBLISTS 11000
 //#define MAX_CAL 200     // Kalibrira se samo jednom na početku mjerenja
 #define BLOCKS_PER_PHASE 10   // Koliko mjerenja prije okretanja filtera
 #define SAMPLES_PER_BLOCK 20  // reported sub-samples per measurement block (sets the stored stddev)
 #define OVERSAMPLE 15         // ADC conversions averaged into each reported sub-sample (extra integration on top of hardware OSR)
 #define SAMPLES_FOR_CAL 100
 #define WARMUP_MS 40000       // let the analog board settle before offset cal (warm-up curve was flat by ~6 s; 30 s gives cold-start margin)
-#define SERVO_SETTLE_TIME 1000
+#define SERVO_SETTLE_TIME 400
+#define FILTER_EASE_MS    700   // ease-in-out duration for the filter servo move (ms)
 #define ADC_DISCARD_SAMPLES 25  // conversions thrown away after each CMD_WAKEUP so the settling spike never lands in a measurement (~100 ms @ 250 SPS)
+
+// ---------------- DATA DELIVERY (flash backup + WiFi upload) ----------------
+// The run is saved to flash the instant it ends, so these windows are just "how long
+// to try the convenient WiFi delivery" -- if they expire, the data is safe on flash
+// and ships on the next power-up. Draw during retries (~0.2 A) makes even 10 min trivial.
+#define UPLOAD_WINDOW_MS     600000UL  // after a run: try WiFi delivery this long, then sleep
+#define BOOT_RECOVERY_MS     180000UL  // at boot: try this long to ship any stranded run first
+#define UPLOAD_RETRY_GAP_MS   15000UL  // wait between delivery attempts
 
 // ---------------- HARDWARE OBJECTS ----------------
 ADS131M04 adc1;        //objekt ADC-a
@@ -66,9 +78,9 @@ Preferences     prefs;
 uint8_t cal_cycles = 0;
 // -------- FILTER SERVO POSITIONS (servo pulse width, microseconds) --------
 // 400 / 2600 are the ends of the widened SG90 range; pos_cal sits halfway
-int pos1    = 600;
-int pos2    = 2400;
-int pos_cal = 1450;
+int pos1    = 550;
+int pos2    = 2450;
+int pos_cal = 1500;
 
 // SKALA
 float FS = 8388608.0;
@@ -91,10 +103,12 @@ void IRAM_ATTR adc_ready_interrupt() {
     drdy_fall = true;
 }
 
-// ---------------- DYNAMIC STORAGE ----------------
-// each row: elevation, mean_ch0, stddev_ch0, mean_ch1, stddev_ch1, temp_c
-float (*measurements)[6] = NULL;
-size_t measurement_index = 0;
+// ---------------- RUN STATE ----------------
+// Rows are streamed straight to flash as they're measured (see datalink runFile*),
+// so there's no in-RAM buffer -- RAM use is flat regardless of run length.
+size_t measurement_index = 0;     // rows written this run (also the stop counter)
+bool   loggingToFlash    = false; // true once the run file is open
+bool   stopRequested     = false; // set by the BOOT button -> end the run early (no WiFi needed)
 
 // ---------------- MEASUREMENT-START METADATA (emitted as CSV header) ----------------
 char   startDate[11] = "";   // YYYY-MM-DD (local)
@@ -137,13 +151,15 @@ void setup() {
   pinMode(ADC_CS, OUTPUT);
   digitalWrite(ADC_CS, HIGH);
 
+  pinMode(STOP_BTN, INPUT_PULLUP);   // BOOT button = WiFi-free manual early-stop
+
   displayInit();
 
   filter_servo.attach(FILTER, 400, 2600);
   filter_servo.writeMicroseconds(pos_cal);
 
   sunflowerBegin(TRK_H_PIN, TRK_V_PIN, LDR_LT, LDR_RT, LDR_LD, LDR_RD);
-  sunflowerFindSun(20000);
+  sunflowerFindSun(30000);
 
   Wire.begin();
   if (!rtc.begin()) {
@@ -151,19 +167,51 @@ void setup() {
     displayError("DS3231 ERROR");
     while (1) delay(1000);
   }
-  {
-    char buildStamp[24];
-    snprintf(buildStamp, sizeof(buildStamp), "%s %s", __DATE__, __TIME__);
-    prefs.begin("ozone", false);
-    bool newBuild = (prefs.getString("build", "") != String(buildStamp));
-    if (newBuild || rtc.lostPower()) {
-      rtc.adjust(DateTime(F(__DATE__), F(__TIME__)) - TimeSpan(UTC_OFFSET_HOURS * 3600L));
-      prefs.putString("build", buildStamp);
-      Serial.println("RTC set from build time (fresh flash or lost power)");
-    } else {
-      Serial.println("RTC kept (same firmware -> trusting its running time)");
+  // ---- Bring up flash + WiFi EARLY so we can NTP-sync the clock BEFORE anything
+  //      timestamps off it (the CSV start time and the sun-elevation calc). ----
+  bool flashOK = storageBegin();
+  displayMessage(flashOK ? "Flash backup ready" : "FLASH MOUNT FAILED", flashOK);
+  delay(1500);
+
+  if (commandLinkBegin()) {
+    char ipmsg[40];
+    snprintf(ipmsg, sizeof(ipmsg), "IP %s", deviceAddress().c_str());
+    displayMessage(ipmsg);   // show address on the TFT -- no serial needed (also: ozone.local)
+    delay(4000);
+  }
+
+  // ---- Set the clock ----
+  // NTP (exact, over WiFi) whenever reachable. If NTP fails, TRUST the DS3231 -- once it's
+  // been set right (NTP, ideally), the coin cell keeps it across reflashes/power-cycles.
+  // Only fall back to build time if the RTC truly has no valid time (lost power / dead cell).
+  uint32_t ntpEpoch = 0;
+  if (ntpSyncUTC(ntpEpoch)) {
+    rtc.adjust(DateTime(ntpEpoch));            // exact UTC; corrects any drift
+    Serial.println("RTC synced from NTP (UTC)");
+    displayMessage("Clock: NTP synced");
+  } else if (rtc.lostPower()) {
+    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)) - TimeSpan(UTC_OFFSET_HOURS * 3600L));
+    Serial.println("NTP failed + RTC lost power -> seeded from build time");
+    displayMessage("Clock: build-time", false);
+  } else {
+    Serial.println("NTP failed -> trusting DS3231 (coin-cell time)");
+    displayMessage("Clock: RTC kept");
+  }
+  delay(1000);
+
+  // If a previous run is still on flash undelivered, ship it now before the new run
+  // (you're presumably near the PC at power-up). Time-boxed so it can't stall the run.
+  if (pendingBackupCount() > 0) {
+    Serial.printf("FLASH: %d unsent run(s) on flash -> delivering before new run\n",
+                  pendingBackupCount());
+    displayMessage("Resending saved run...");
+    uint32_t t0 = millis();
+    while (pendingBackupCount() > 0 && millis() - t0 < BOOT_RECOVERY_MS) {
+      if (uploadPendingBackups() == 0) delay(UPLOAD_RETRY_GAP_MS);
     }
-    prefs.end();
+    bool cleared = (pendingBackupCount() == 0);
+    displayMessage(cleared ? "Saved run sent" : "Kept on flash", cleared);
+    delay(1500);
   }
 
   // BME280 on the same I2C bus (modules are usually 0x76, Adafruit boards 0x77).
@@ -190,12 +238,6 @@ void setup() {
   setup_ADC_CARD();
   attachInterrupt(ADC_DRDY, adc_ready_interrupt, FALLING);
   drdy_fall = false;
-
-  measurements = (float (*)[6])malloc(MAX_SUBLISTS * sizeof(*measurements));
-  if (!measurements) {
-    Serial.println("Memory allocation failed!");
-    while (1);
-  }
 
   Serial.println("---- MEASUREMENTS START ----");
 
@@ -228,13 +270,29 @@ void setup() {
   // ------- OFFSET CALIBRATION -------
   float offset_v0, offset_v1;
   offsetCalibration(offset_v0, offset_v1);
+
+  // ------- OPEN THE RUN FILE (stream each block to flash from here on) -------
+  // Header needs the offsets, so this is after calibration. RAM stays flat regardless
+  // of run length; the run is durable on flash within ~1 s of each block.
+  MeasurementMeta meta = {
+    startTime, startDate, startLat, startLon,
+    startEnvValid, startTemp, startHum, startPress,
+    offsetCal0, offsetCal0Std, offsetCal1, offsetCal1Std
+  };
+  loggingToFlash = runFileBegin(meta);
+  displayMessage(loggingToFlash ? "Logging to flash" : "NO FLASH-serial only", loggingToFlash);
+  delay(1200);
 }
 
 // ---------------- LOOP ----------------
 void loop() {
+  // Keep the WiFi link alive so 'dump' stays reachable the whole run (reconnects if
+  // the AP dropped us / the DHCP lease lapsed). No-op/instant when already connected.
+  wifiKeepalive();
+
   // ------- RE-AIM AT THE SUN -------
   static uint32_t loopCount = 0;
-  if (++loopCount % 10 == 0) sunflowerFindSun(5000);
+  if (++loopCount % 5 == 0) sunflowerFindSun(5000);
 
   // ------- SUN POSITION -------
   //pollGPS();
@@ -254,6 +312,7 @@ void loop() {
     storeMeasurement(el, mean_ch0, stddev_ch0, mean_ch1, stddev_ch1, tC);
     DateTime nowLocal = DateTime(rtc.now().unixtime() + UTC_OFFSET_HOURS * 3600UL);
     drawScreen(nowLocal, sun, mean_ch0, stddev_ch0, mean_ch1, stddev_ch1);
+    if (digitalRead(STOP_BTN) == LOW) { delay(30); if (digitalRead(STOP_BTN) == LOW) stopRequested = true; }
   }
   // ------- PHASE  2 -------
   filter_rotation(pos2);
@@ -265,6 +324,7 @@ void loop() {
     storeMeasurement(el, mean_ch0, stddev_ch0, mean_ch1, stddev_ch1, tC);
     DateTime nowLocal = DateTime(rtc.now().unixtime() + UTC_OFFSET_HOURS * 3600UL);
     drawScreen(nowLocal, sun, mean_ch0, stddev_ch0, mean_ch1, stddev_ch1);
+    if (digitalRead(STOP_BTN) == LOW) { delay(30); if (digitalRead(STOP_BTN) == LOW) stopRequested = true; }
   }
 /*
   // ------- CALIBRATION -------
@@ -272,38 +332,43 @@ void loop() {
     kalibracija tokom mjerenja
   }
 */
-  // ------- PRINT AND SHUTDOWN -------
-  if (measurement_index >= MAX_SUBLISTS) {
-    Serial.println("---- DATA START ----");
-    for (size_t i = 0; i < MAX_SUBLISTS; i++) {
-      Serial.print("[");
-      Serial.print(measurements[i][0], 4); Serial.print(",");
-      Serial.print(measurements[i][1], 4); Serial.print(",");
-      Serial.print(measurements[i][2], 4); Serial.print(",");
-      Serial.print(measurements[i][3], 4); Serial.print(",");
-      Serial.print(measurements[i][4], 4); Serial.print(",");
-      Serial.print(measurements[i][5], 4);
-      Serial.println("]");
-    }
-    Serial.println("---- DATA END ----");
+  // ------- END OF RUN -------
+  // Ends when: the row count is reached, OR the BOOT button was pressed (works with no
+  // WiFi), OR a 'dump'/'stop' arrives over WiFi. The run is already streamed to flash,
+  // so ending early just flushes/closes the file and delivers it.
+  if (measurement_index >= MAX_SUBLISTS || stopRequested || stopCommandReceived()) {
+    filter_rotation(pos1);
 
-    // ------- SEND DATA OVER WIFI (before freeing the buffer) -------
-    displayMessage("Sending data...");
-    MeasurementMeta meta = {
-      startTime, startDate, startLat, startLon,
-      startEnvValid, startTemp, startHum, startPress,
-      offsetCal0, offsetCal0Std, offsetCal1, offsetCal1Std
-    };
-    bool sent = uploadMeasurementsCSV(measurements, MAX_SUBLISTS, meta);
-    displayMessage(sent ? "Upload done" : "Upload failed", sent);
+    // The run is already on flash (streamed per block) -- just flush + close it.
+    runFileEnd();
+    Serial.printf("---- RUN COMPLETE: %u rows on flash ----\n", (unsigned)measurement_index);
+
+    // ------- DELIVER OVER WIFI (data already safe on flash) -------
+    // Time-boxed: try UPLOAD_WINDOW_MS, then sleep. Anything not sent stays on flash
+    // and ships on the next power-up (boot recovery).
+    if (loggingToFlash && pendingBackupCount() > 0) {
+      displayMessage("Sending data...");
+      uint32_t t0 = millis();
+      while (pendingBackupCount() > 0 && millis() - t0 < UPLOAD_WINDOW_MS) {
+        if (uploadPendingBackups() == 0) {
+          uint32_t leftS = (UPLOAD_WINDOW_MS - (millis() - t0)) / 1000;
+          Serial.printf("Upload failed -- data safe on flash, retrying (%lus left). "
+                        "PC listener up?  ncat -l 5000 > data.csv\n", (unsigned long)leftS);
+          char m[44];
+          snprintf(m, sizeof(m), "No PC; retry %lus", (unsigned long)leftS);
+          displayMessage(m, false);
+          delay(UPLOAD_RETRY_GAP_MS);
+        }
+      }
+      bool delivered = (pendingBackupCount() == 0);
+      displayMessage(delivered ? "Upload done" : "On flash; next boot", delivered);
+    } else {
+      // No flash this run (mount failed) -> the serial log was the only record.
+      displayMessage(loggingToFlash ? "Run on flash" : "NO FLASH-check serial", loggingToFlash);
+    }
     delay(1500);
 
     Serial.println("Shutting down system...");
-    if (measurements != NULL) {
-      free(measurements);
-      measurements = NULL;
-    }
-    filter_rotation(pos1);
     displayOff();
 
     adc1.sendcmd(CMD_STANDBY);
@@ -350,6 +415,29 @@ void setup_ADC_CARD() {
   adc1.readADC();   // flush any latched DRDY so the first interrupt edge is genuine
 }
 
+// ---------------- FILTER SERVO EASING ----------------
+// Tracks the last commanded filter position so the next move can ease from it.
+static int filterCurrentUs = pos_cal;
+
+// Smoothly move the filter servo to `target` over durationMs with an ease-in-out
+// (smoothstep) profile -- gentle accel/decel instead of an abrupt full-speed slew.
+static void easeServoTo(int target, uint32_t durationMs) {
+  int start = filterCurrentUs;
+  if (target != start) {
+    const uint32_t STEP_MS = 15;                 // ~66 position updates per second
+    uint32_t steps = durationMs / STEP_MS;
+    if (steps < 1) steps = 1;
+    for (uint32_t i = 1; i <= steps; i++) {
+      float t = (float)i / (float)steps;         // progress 0..1
+      float e = t * t * (3.0f - 2.0f * t);       // smoothstep: ease in, ease out
+      filter_servo.writeMicroseconds(start + (int)lround((target - start) * e));
+      delay(STEP_MS);
+    }
+    filter_servo.writeMicroseconds(target);      // land exactly on target
+  }
+  filterCurrentUs = target;
+}
+
 // ---------------- FILTER ROTATION ----------------
 void filter_rotation(int pos) {
 
@@ -360,8 +448,8 @@ void filter_rotation(int pos) {
   Serial.print(pos);
   Serial.println(" us");
 
-  filter_servo.writeMicroseconds(pos);
-  delay(SERVO_SETTLE_TIME);
+  easeServoTo(pos, FILTER_EASE_MS);   // smooth ease-in-out to the new filter position
+  delay(SERVO_SETTLE_TIME);           // mechanical settle before measuring
 
   adc1.sendcmd(CMD_WAKEUP);
   delay(10);
@@ -376,50 +464,6 @@ void filter_rotation(int pos) {
       discarded++;
     }
     if (millis() - t0 > 2000) break;   // ADC not responding
-  }
-}
-
-// ---------------- WARM-UP ----------------
-// Let the analog board settle before offset calibration. ch1's amplifier offset
-// drifts for tens of seconds after power-on; calibrating too early bakes that drift
-// into the offset. Logs both channels once a second so the settling curve is visible
-// on the serial monitor; shorten WARMUP_MS once ch1 has plateaued.
-void warmup(uint32_t ms) {
-  Serial.printf("---- WARM-UP %lu s ----\n", (unsigned long)(ms / 1000UL));
-  unsigned long tStart = millis();
-  while (millis() - tStart < ms) {
-    // one OVERSAMPLE read of each channel -> mean +/- stddev (Welford, like measurement())
-    double m0 = 0, m1 = 0, s0 = 0, s1 = 0;
-    int got = 0;
-    unsigned long t0 = millis();
-    while (got < OVERSAMPLE) {
-      if (drdy_fall) {
-        drdy_fall = false;
-        adcOutput temp = adc1.readADC();
-        double d0 = temp.ch0 - m0; m0 += d0 / (got + 1); s0 += d0 * (temp.ch0 - m0);
-        double d1 = temp.ch1 - m1; m1 += d1 / (got + 1); s1 += d1 * (temp.ch1 - m1);
-        got++;
-      }
-      if (millis() - t0 > 2000) { Serial.println("ADC timeout during warm-up"); break; }
-    }
-    if (got == 0) break;
-    int dn = (got > 1) ? (got - 1) : 1;
-    float var0 = s0 / dn; if (var0 < 0) var0 = 0;
-    float var1 = s1 / dn; if (var1 < 0) var1 = 0;
-    float v0  = m0 / FS * PREF_ADC,            v1  = m1 / FS * PREF_ADC;
-    float sd0 = sqrt(var0) / FS * PREF_ADC,    sd1 = sqrt(var1) / FS * PREF_ADC;
-
-    unsigned long elapsed   = (millis() - tStart) / 1000UL;
-    unsigned long remaining = (ms - (millis() - tStart)) / 1000UL;
-    Serial.printf("warmup t=%3lus  ch0=%8.3f +/- %.3f mV  ch1=%8.3f +/- %.3f mV\n",
-                  elapsed, v0, sd0, v1, sd1);
-
-    char buf[64];
-    snprintf(buf, sizeof(buf), "Warm-up %lus\nch0 %.2f+-%.2f\nch1 %.2f+-%.2f",
-             remaining, v0, sd0, v1, sd1);
-    displayMessage(buf);
-
-    delay(1000);
   }
 }
 
@@ -503,11 +547,6 @@ void offsetCalibration(float &offset_v0, float &offset_v1) {
 }
 
 // ---------------- READ AND COMPUTE ----------------
-// Each reported sub-sample is the average of OVERSAMPLE consecutive conversions
-// (the ADC already oversamples in hardware at OSR 16384). The block mean is thus
-// built from SAMPLES_PER_BLOCK*OVERSAMPLE conversions, while the reported stddev is
-// the spread of the SAMPLES_PER_BLOCK averaged sub-samples (how steady the signal
-// was over the block, not single-conversion jitter).
 void measurement(float &mean_v0, float &stddev_v0, float &mean_v1, float &stddev_v1) {
   double m0 = 0;   // running mean  (Welford) over averaged sub-samples
   double m1 = 0;
@@ -575,12 +614,11 @@ void storeMeasurement(float el, float a, float b, float c, float d, float t) {
   if (measurement_index >= MAX_SUBLISTS)
     return;
 
-  measurements[measurement_index][0] = el;
-  measurements[measurement_index][1] = a;
-  measurements[measurement_index][2] = b;
-  measurements[measurement_index][3] = c;
-  measurements[measurement_index][4] = d;
-  measurements[measurement_index][5] = t;
+  if (loggingToFlash) runFileAppendRow(el, a, b, c, d, t);   // durable, per block
+
+  // Live serial copy in the parser's bracketed format -- an independent backup when a
+  // serial host (PuTTY) is attached; harmlessly dropped when nothing is reading.
+  Serial.printf("[%.4f,%.4f,%.4f,%.4f,%.4f,%.4f]\n", el, a, b, c, d, t);
 
   measurement_index++;
   cal_cycles++;
@@ -628,4 +666,44 @@ static void gpsEnterBackup() {
   gpsSerial.flush();        // ensure it's transmitted before we stop polling
   gpsAwake = false;
   Serial.println("GPS: fix done -> backup (sleep) command sent");
+}
+
+// ---------------- WARM-UP ----------------
+void warmup(uint32_t ms) {
+  Serial.printf("---- WARM-UP %lu s ----\n", (unsigned long)(ms / 1000UL));
+  unsigned long tStart = millis();
+  while (millis() - tStart < ms) {
+    // one OVERSAMPLE read of each channel -> mean +/- stddev (Welford, like measurement())
+    double m0 = 0, m1 = 0, s0 = 0, s1 = 0;
+    int got = 0;
+    unsigned long t0 = millis();
+    while (got < OVERSAMPLE) {
+      if (drdy_fall) {
+        drdy_fall = false;
+        adcOutput temp = adc1.readADC();
+        double d0 = temp.ch0 - m0; m0 += d0 / (got + 1); s0 += d0 * (temp.ch0 - m0);
+        double d1 = temp.ch1 - m1; m1 += d1 / (got + 1); s1 += d1 * (temp.ch1 - m1);
+        got++;
+      }
+      if (millis() - t0 > 2000) { Serial.println("ADC timeout during warm-up"); break; }
+    }
+    if (got == 0) break;
+    int dn = (got > 1) ? (got - 1) : 1;
+    float var0 = s0 / dn; if (var0 < 0) var0 = 0;
+    float var1 = s1 / dn; if (var1 < 0) var1 = 0;
+    float v0  = m0 / FS * PREF_ADC,            v1  = m1 / FS * PREF_ADC;
+    float sd0 = sqrt(var0) / FS * PREF_ADC,    sd1 = sqrt(var1) / FS * PREF_ADC;
+
+    unsigned long elapsed   = (millis() - tStart) / 1000UL;
+    unsigned long remaining = (ms - (millis() - tStart)) / 1000UL;
+    Serial.printf("warmup t=%3lus  ch0=%8.3f +/- %.3f mV  ch1=%8.3f +/- %.3f mV\n",
+                  elapsed, v0, sd0, v1, sd1);
+
+    char buf[64];
+    snprintf(buf, sizeof(buf), "Warm-up %lus\nch0 %.2f+-%.2f\nch1 %.2f+-%.2f",
+             remaining, v0, sd0, v1, sd1);
+    displayMessage(buf);
+
+    delay(1000);
+  }
 }

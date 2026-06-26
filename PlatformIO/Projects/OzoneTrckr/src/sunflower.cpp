@@ -18,9 +18,9 @@ static const float START_H = 90, START_V = 150;
 // ---- proportional, momentum-limited step ----
 static const float KP       = 0.006f; // deg of step per ADC count of imbalance
 static const float MIN_STEP  = 0.15f;  // deg: smallest move -> keeps inching the last bit
-static const float MAX_STEP  = 1.0f;   // deg: HARD CAP -> momentum limit (no lurch on the heavy mount)
+static const float MAX_STEP  = 0.6f;   // deg: HARD CAP -> momentum limit (no lurch on the heavy mount)
 static const int   TOL       = 60;     // deadband (counts): hold when imbalance is below this
-static const int   STEP_MS   = 40;     // min interval between moves (settle time -> anti-hunt)
+static const int   STEP_MS   = 20;     // min interval between moves (settle time -> anti-hunt)
 static const int   SETTLE_N  = 12;     // consecutive in-band cycles before we call it "locked"
 static const int   LDR_AVG   = 8;      // analogRead samples averaged per LDR (noise reduction)
 

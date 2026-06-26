@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <SPI.h>
+#include <WiFi.h>          // WiFi.status()/RSSI() for the link indicator
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7789.h>
 #include <RTClib.h>
@@ -247,18 +248,27 @@ void drawScreen(const DateTime& now, const SunPos& sun,
   tft.setCursor(112, 5);
   tft.print(buf);
 
-  // GPS status dot: blue=fixed & asleep, green=fix+synced, orange=fix/no sync, red=no fix
+  // WiFi link dot (replaces the old GPS dot -- GPS is hardcoded/asleep now; the WiFi
+  // link is the thing worth watching since drops are the open issue):
+  //   green "W" = connected, good signal | orange "w" = connected, weak | red "x" = down.
+  // Reflects association; with modem sleep off WiFi.status() is truthful. RSSI (dBm) is
+  // printed under the dot so you can watch the signal trend before a drop.
+  int      rssi = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : 0;
   uint16_t    dotColor;
   const char* dotLabel;
-  if      (!gpsAwake)     { dotColor = C_GPS_SLEEP; dotLabel = "S"; }
-  else if (!hasFix)       { dotColor = C_GPS_BAD;   dotLabel = "?"; }
-  else if (rtcSyncedGPS)  { dotColor = C_GPS_OK;    dotLabel = "G"; }
-  else                    { dotColor = 0xFD20;      dotLabel = "g"; }
+  if      (WiFi.status() != WL_CONNECTED) { dotColor = C_GPS_BAD; dotLabel = "x"; }
+  else if (rssi < -75)                    { dotColor = 0xFD20;    dotLabel = "w"; }
+  else                                    { dotColor = C_GPS_OK;  dotLabel = "W"; }
   tft.fillCircle(229, 12, 9, dotColor);
   tft.setTextSize(1);
   tft.setTextColor(0x0000);
   tft.setCursor(226, 8);
   tft.print(dotLabel);
+  // RSSI value (size 1) tucked under the dot, e.g. "-67" / "--" when down
+  tft.setTextColor(C_DATE);
+  tft.setCursor(212, 22);
+  if (WiFi.status() == WL_CONNECTED) { tft.print(rssi); }
+  else                               { tft.print("--"); }
   tft.setTextSize(2);
 
   // ----- coordinates -----

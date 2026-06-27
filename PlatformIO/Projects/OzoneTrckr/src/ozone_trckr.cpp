@@ -45,7 +45,7 @@
 
 // ---------------- MEASUREMENT CONFIG ----------------
 // 4000 sublists (around 1 hr 35 min), rotate filters every 10 sublists, calibrate every 200
-#define MAX_SUBLISTS 7500
+#define MAX_SUBLISTS 8000
 //#define MAX_CAL 200     // Kalibrira se samo jednom na početku mjerenja
 #define BLOCKS_PER_PHASE 10   // Koliko mjerenja prije okretanja filtera
 #define SAMPLES_PER_BLOCK 20  // reported sub-samples per measurement block (sets the stored stddev)

@@ -12,6 +12,7 @@
 #include "datalink.h"         // WiFi upload of the measurement list to a computer
 #include "SolarCalculator.h"  // SunPos + NOAA sun-position math
 #include "sunflower.h"        // two-axis LDR sun tracker (steers the mount onto the sun)
+#include "driver/gpio.h"      // gpio_hold_en() -- latch servo pins across deep sleep
 
 // ---------------- ANALOG BOARD / ADC PINS ----------------
 #define EN 11
@@ -44,7 +45,7 @@
 
 // ---------------- MEASUREMENT CONFIG ----------------
 // 4000 sublists (around 1 hr 35 min), rotate filters every 10 sublists, calibrate every 200
-#define MAX_SUBLISTS 11000
+#define MAX_SUBLISTS 10000
 //#define MAX_CAL 200     // Kalibrira se samo jednom na početku mjerenja
 #define BLOCKS_PER_PHASE 10   // Koliko mjerenja prije okretanja filtera
 #define SAMPLES_PER_BLOCK 20  // reported sub-samples per measurement block (sets the stored stddev)
@@ -75,11 +76,11 @@ HardwareSerial  gpsSerial(1);
 Preferences     prefs;
 
 // ---------------- STATE ----------------
-uint8_t cal_cycles = 0;
+//uint8_t cal_cycles = 0;
 // -------- FILTER SERVO POSITIONS (servo pulse width, microseconds) --------
 // 400 / 2600 are the ends of the widened SG90 range; pos_cal sits halfway
 int pos1    = 550;
-int pos2    = 2450;
+int pos2    = 2440;
 int pos_cal = 1500;
 
 // SKALA
@@ -295,9 +296,9 @@ void setup() {
 
 // ---------------- LOOP ----------------
 void loop() {
-  // Keep the WiFi link alive so 'dump' stays reachable the whole run (reconnects if
-  // the AP dropped us / the DHCP lease lapsed). No-op/instant when already connected.
-  wifiKeepalive();
+  // WiFi keepalive + remote-stop are polled PER BLOCK (in the phase loops below), so a
+  // 'dump'/'stop' is seen within ~one block and a dropped link reconnects promptly --
+  // not once per ~20-block iteration.
 
   // ------- RE-AIM AT THE SUN -------
   static uint32_t loopCount = 0;
@@ -322,6 +323,10 @@ void loop() {
     DateTime nowLocal = DateTime(rtc.now().unixtime() + UTC_OFFSET_HOURS * 3600UL);
     drawScreen(nowLocal, sun, mean_ch0, stddev_ch0, mean_ch1, stddev_ch1);
     if (digitalRead(STOP_BTN) == LOW) { delay(30); if (digitalRead(STOP_BTN) == LOW) stopRequested = true; }
+    wifiKeepalive();                                   // per block: reconnect if the link dropped
+    if (stopCommandReceived()) stopRequested = true;   // per block: WiFi 'dump'/'stop' + service the cmd server
+    // NOTE: we do NOT break here -- a stop request lets the current phase finish, so every
+    // run always ends with complete 10 (phase 1) + 10 (phase 2) blocks, never a partial phase.
   }
   // ------- PHASE  2 -------
   filter_rotation(pos2);
@@ -334,6 +339,10 @@ void loop() {
     DateTime nowLocal = DateTime(rtc.now().unixtime() + UTC_OFFSET_HOURS * 3600UL);
     drawScreen(nowLocal, sun, mean_ch0, stddev_ch0, mean_ch1, stddev_ch1);
     if (digitalRead(STOP_BTN) == LOW) { delay(30); if (digitalRead(STOP_BTN) == LOW) stopRequested = true; }
+    wifiKeepalive();                                   // per block: reconnect if the link dropped
+    if (stopCommandReceived()) stopRequested = true;   // per block: WiFi 'dump'/'stop' + service the cmd server
+    // NOTE: we do NOT break here -- a stop request lets the current phase finish, so every
+    // run always ends with complete 10 (phase 1) + 10 (phase 2) blocks, never a partial phase.
   }
 /*
   // ------- CALIBRATION -------
@@ -395,7 +404,18 @@ void loop() {
 
     digitalWrite(EN, LOW);
     storageEnd();   // clean unmount so the next boot mounts cleanly (no reformat/wipe)
+
+    // Latch the RTC-capable tracker servo pins (GPIO12/13) so they hold their level
+    // instead of floating when the PWM stops -> no twitch at shutdown. (GPIO5/filter
+    // isn't RTC-capable, so it can't be held; the hold clears on the next reset.)
+    gpio_hold_en((gpio_num_t)TRK_H_PIN);
+    gpio_hold_en((gpio_num_t)TRK_V_PIN);
+    gpio_deep_sleep_hold_en();
+
     Serial.println("Going into deep sleep...");
+    // NO wake source by design: one run per manual placement. You power-cycle / press
+    // RESET to start the next run and carry the instrument in when done -- the absence of
+    // any esp_sleep_enable_*() (timer/EXT) wake is intentional, not a missing timer.
     esp_deep_sleep_start();
   }
 }
@@ -635,7 +655,7 @@ void storeMeasurement(float el, float a, float b, float c, float d, float t) {
   Serial.printf("[%.4f,%.4f,%.4f,%.4f,%.4f,%.4f]\n", el, a, b, c, d, t);
 
   measurement_index++;
-  cal_cycles++;
+  //cal_cycles++;
 }
 
 // ---------------- GPS POLL + RTC SYNC ----------------

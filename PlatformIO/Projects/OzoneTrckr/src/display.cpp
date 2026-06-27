@@ -225,110 +225,92 @@ void splashSunset() {
 //  y=92   ─ separator ─
 //  y=98   Ch1: mean  stddev  (cyan)
 //  y=118  Ch2: mean  stddev  (orange)
+// Flicker-free: the static layout (separators, fixed coords, EL/AZ/deg labels) is drawn
+// ONCE; every block only the changing fields are repainted IN PLACE with an opaque text
+// background (setTextColor(fg, bg)) at fixed widths, so new values overwrite old without
+// a full fillScreen() and without per-field blanking. Call forceStaticRedraw() after any
+// full-screen takeover (displayMessage etc.) so the layout is rebuilt on the next frame.
+static bool staticDrawn = false;
+static void forceStaticRedraw() { staticDrawn = false; }  // call after any full-screen takeover
+
 void drawScreen(const DateTime& now, const SunPos& sun,
                 float m0, float sd0, float m1, float sd1) {
   char buf[40];
   bool havePos = hasFix || hasStoredPos;
-  tft.fillScreen(C_BG);
   tft.setTextWrap(false);
+
+  // ---- static layout: drawn once ----
+  if (!staticDrawn) {
+    tft.fillScreen(C_BG);
+    tft.drawFastHLine(0, 46, 240, C_SEP);
+    tft.drawFastHLine(0, 92, 240, C_SEP);
+    tft.setTextSize(2);
+    tft.setTextColor(C_COORD, C_BG);                 // coordinates are fixed for the run
+    if (havePos) snprintf(buf, sizeof(buf), "%c%.4f %c%.4f",
+                          gpsLat >= 0 ? 'N' : 'S', fabs(gpsLat),
+                          gpsLon >= 0 ? 'E' : 'W', fabs(gpsLon));
+    else         snprintf(buf, sizeof(buf), "--.----  ---.----");
+    tft.setCursor(4, 25);  tft.print(buf);
+    tft.setTextColor(C_LABEL, C_BG);
+    tft.setCursor(4,   52); tft.print("EL ");
+    tft.setCursor(112, 52); tft.print(" deg");
+    tft.setCursor(4,   72); tft.print("AZ ");
+    staticDrawn = true;
+  }
+
   tft.setTextSize(2);
 
-  // separators
-  tft.drawFastHLine(0, 46, 240, C_SEP);
-  tft.drawFastHLine(0, 92, 240, C_SEP);
-
-  // ----- time + date -----
-  tft.setTextColor(C_TIME);
+  // ---- time + date (fixed width -> opaque overwrite) ----
+  tft.setTextColor(C_TIME, C_BG);
   snprintf(buf, sizeof(buf), "%02d:%02d:%02d", now.hour(), now.minute(), now.second());
-  tft.setCursor(4, 5);
-  tft.print(buf);
-
-  tft.setTextColor(C_DATE);
+  tft.setCursor(4, 5);   tft.print(buf);
+  tft.setTextColor(C_DATE, C_BG);
   snprintf(buf, sizeof(buf), "%02d/%02d/%02d", now.day(), now.month(), now.year() % 100);
-  tft.setCursor(112, 5);
-  tft.print(buf);
+  tft.setCursor(112, 5); tft.print(buf);
 
-  // WiFi link dot (replaces the old GPS dot -- GPS is hardcoded/asleep now; the WiFi
-  // link is the thing worth watching since drops are the open issue):
-  //   green "W" = connected, good signal | orange "w" = connected, weak | red "x" = down.
-  // Reflects association; with modem sleep off WiFi.status() is truthful. RSSI (dBm) is
-  // printed under the dot so you can watch the signal trend before a drop.
-  // top-right status dots: WiFi (upper) + flash logging (lower).
-  //   WiFi:  green "W" connected/good | orange "w" connected/weak | red "x" down; RSSI below it.
-  //   Flash: green "F" logging & last write OK | red "F" not logging / last write failed.
+  // ---- top-right status dots: WiFi (upper) + flash (lower) ----
+  //   WiFi:  green "W" good | orange "w" weak | red "x" down; RSSI (dBm) below it.
+  //   Flash: green "F" logging & last write OK | red "F" not logging / write failed.
   int      rssi = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : 0;
   uint16_t    wColor;
   const char* wLabel;
   if      (WiFi.status() != WL_CONNECTED) { wColor = C_GPS_BAD; wLabel = "x"; }
   else if (rssi < -75)                    { wColor = 0xFD20;    wLabel = "w"; }
   else                                    { wColor = C_GPS_OK;  wLabel = "W"; }
-  tft.fillCircle(229, 11, 8, wColor);
+  tft.fillCircle(229, 11, 8, wColor);                // opaque -> redraw is clean
   tft.setTextSize(1);
-  tft.setTextColor(0x0000);
-  tft.setCursor(226, 7);
-  tft.print(wLabel);
-  // RSSI value (size 1) between the two dots, e.g. "-67" / "--" when down
-  tft.setTextColor(C_DATE);
-  tft.setCursor(205, 21);
-  if (WiFi.status() == WL_CONNECTED) { tft.print(rssi); } else { tft.print("--"); }
-
-  // flash-logging dot, below the WiFi one
-  tft.fillCircle(229, 36, 8, flashHealthy ? C_GPS_OK : C_GPS_BAD);
-  tft.setTextColor(0x0000);
-  tft.setCursor(226, 32);
-  tft.print("F");
+  tft.setTextColor(0x0000, wColor);
+  tft.setCursor(226, 7); tft.print(wLabel);
+  tft.setTextColor(C_DATE, C_BG);                    // RSSI, fixed 4 chars (e.g. " -67" / "  --")
+  tft.setCursor(199, 21);
+  if (WiFi.status() == WL_CONNECTED) snprintf(buf, sizeof(buf), "%4d", rssi);
+  else                               snprintf(buf, sizeof(buf), "  --");
+  tft.print(buf);
+  uint16_t fColor = flashHealthy ? C_GPS_OK : C_GPS_BAD;
+  tft.fillCircle(229, 36, 8, fColor);
+  tft.setTextColor(0x0000, fColor);
+  tft.setCursor(226, 32); tft.print("F");
   tft.setTextSize(2);
 
-  // ----- coordinates -----
-  tft.setTextColor(C_COORD);
-  if (havePos) {
-    snprintf(buf, sizeof(buf), "%c%.4f %c%.4f",
-             gpsLat >= 0 ? 'N' : 'S', fabs(gpsLat),
-             gpsLon >= 0 ? 'E' : 'W', fabs(gpsLon));
-  } else {
-    snprintf(buf, sizeof(buf), "--.----  ---.----");
-  }
-  tft.setCursor(4, 25);
+  // ---- elevation value (fixed 6 chars, between static "EL " and " deg") ----
+  tft.setCursor(40, 52);
+  if (havePos) { tft.setTextColor(elevColor(sun.elevation), C_BG); snprintf(buf, sizeof(buf), "%+6.2f", sun.elevation); }
+  else         { tft.setTextColor(C_LABEL, C_BG);                  snprintf(buf, sizeof(buf), "%6s", "--.--"); }
   tft.print(buf);
 
-  // ----- elevation -----
-  tft.setTextColor(C_LABEL);
-  tft.setCursor(4, 52);
-  tft.print("EL ");
-  if (havePos) {
-    tft.setTextColor(elevColor(sun.elevation));
-    snprintf(buf, sizeof(buf), "%+6.2f", sun.elevation);
-    tft.print(buf);
-    tft.setTextColor(C_LABEL);
-    tft.print(" deg");
-  } else {
-    tft.print("  ---.--");
-  }
+  // ---- azimuth value + cardinal (fixed widths) ----
+  tft.setCursor(40, 72);
+  if (havePos) { tft.setTextColor(C_AZ, C_BG);    snprintf(buf, sizeof(buf), "%6.2f %-2s", sun.azimuth, azCardinal(sun.azimuth)); }
+  else         { tft.setTextColor(C_LABEL, C_BG); snprintf(buf, sizeof(buf), "%6s %-2s", "---.--", ""); }
+  tft.print(buf);
 
-  // ----- azimuth -----
-  tft.setTextColor(C_LABEL);
-  tft.setCursor(4, 72);
-  tft.print("AZ ");
-  if (havePos) {
-    tft.setTextColor(C_AZ);
-    snprintf(buf, sizeof(buf), "%6.2f", sun.azimuth);
-    tft.print(buf);
-    tft.print(" ");
-    tft.print(azCardinal(sun.azimuth));
-  } else {
-    tft.print("  ---.--");
-  }
-
-  // ----- channel readings -----
-  tft.setTextColor(C_CH1);
+  // ---- channel readings (fixed width -> opaque overwrite) ----
+  tft.setTextColor(C_CH1, C_BG);
   snprintf(buf, sizeof(buf), "Ch1:%8.2f %6.2f", m0, sd0);
-  tft.setCursor(4, 98);
-  tft.print(buf);
-
-  tft.setTextColor(C_CH2);
+  tft.setCursor(4, 98);  tft.print(buf);
+  tft.setTextColor(C_CH2, C_BG);
   snprintf(buf, sizeof(buf), "Ch2:%8.2f %6.2f", m1, sd1);
-  tft.setCursor(4, 118);
-  tft.print(buf);
+  tft.setCursor(4, 118); tft.print(buf);
 }
 
 // ================================================================== OFFSET SCREEN
@@ -337,6 +319,7 @@ void drawScreen(const DateTime& now, const SunPos& sun,
 // same way the measured voltages will.
 void drawOffsetScreen(float off0, float off1) {
   char buf[40];
+  forceStaticRedraw();
   tft.fillScreen(C_BG);
   tft.setTextWrap(false);
 
@@ -380,6 +363,7 @@ void displayInit() {
 }
 
 void displayError(const char* msg) {
+  forceStaticRedraw();
   tft.fillScreen(C_BG);
   tft.setTextColor(C_GPS_BAD);
   tft.setTextSize(2);
@@ -394,6 +378,7 @@ void displayOff() {
 }
 
 void displayMessage(const char* msg, bool ok) {
+  forceStaticRedraw();
   tft.fillScreen(C_BG);
   tft.setTextWrap(false);
   tft.setTextSize(2);

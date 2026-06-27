@@ -363,6 +363,7 @@ bool ADS131M04::setChannelEnable(uint8_t channel, uint16_t enable)
     writeRegisterMasked(REG_CLOCK, enable << 11, REGMASK_CLOCK_CH3_EN);
     return true;
   }
+  return false;   // unreachable today (channel is 0..3) -- silences -Wreturn-type / guards future edits
 }
 
 bool ADS131M04::setChannelPGA(uint8_t channel, uint16_t pga)
@@ -391,6 +392,7 @@ bool ADS131M04::setChannelPGA(uint8_t channel, uint16_t pga)
     writeRegisterMasked(REG_GAIN, pga << 12, REGMASK_GAIN_PGAGAIN3);
     return true;
   }
+  return false;   // unreachable today (channel is 0..3) -- silences -Wreturn-type / guards future edits
 }
 
 void ADS131M04::setGlobalChop(uint16_t global_chop)
@@ -429,6 +431,7 @@ bool ADS131M04::setInputChannelSelection(uint8_t channel, uint8_t input)
     writeRegisterMasked(REG_CH3_CFG, input, REGMASK_CHX_CFG_MUX);
     return true;
   }
+  return false;   // unreachable today (channel is 0..3) -- silences -Wreturn-type / guards future edits
 }
 
 bool ADS131M04::setChannelOffsetCalibration(uint8_t channel, int32_t offset)
@@ -465,6 +468,7 @@ bool ADS131M04::setChannelOffsetCalibration(uint8_t channel, int32_t offset)
     writeRegisterMasked(REG_CH3_OCAL_LSB, LSB << 8 , REGMASK_CHX_OCAL0_LSB);
     return true;
   }
+  return false;   // unreachable today (channel is 0..3) -- silences -Wreturn-type / guards future edits
 }
 
 bool ADS131M04::setChannelGainCalibration(uint8_t channel, uint32_t gain)
@@ -501,6 +505,7 @@ bool ADS131M04::setChannelGainCalibration(uint8_t channel, uint32_t gain)
     writeRegisterMasked(REG_CH3_GCAL_LSB, LSB << 8, REGMASK_CHX_GCAL0_LSB);
     return true;
   }
+  return false;   // unreachable today (channel is 0..3) -- silences -Wreturn-type / guards future edits
 }
 
 
@@ -590,6 +595,10 @@ adcOutput ADS131M04::readADC(void)
   return res;
 }
 
+// WARNING: BROKEN / DO NOT USE. The low-byte reads (`x3 = SPI.transfer(...)`) are
+// commented out below, so the LSB of every channel is always 0. Unused today -- the
+// firmware runs readADC() (24-bit). Left in place but loudly flagged; fix the x3 reads
+// (and the word-size config) before ever calling this.
 adcOutput ADS131M04::readADC16(void)
 {
   //uint32_t tt=ESP.getCycleCount();

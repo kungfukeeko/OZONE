@@ -214,7 +214,7 @@ static bool uploadOneFile(const char* path) {
   }
   if (!wifiEnsure()) { f.close(); return false; }
   WiFiClient client;
-  client.setTimeout(TCP_TIMEOUT_MS / 1000);
+  client.setTimeout(TCP_TIMEOUT_MS);   // Stream::setTimeout is in ms (matters once we read a reply)
   if (!client.connect(PC_HOST, PC_PORT)) {
     Serial.printf("TCP: %s:%u not reachable\n", PC_HOST, PC_PORT);
     f.close();
@@ -347,7 +347,9 @@ void wifiKeepalive() {
     WiFi.begin(WIFI_SSID, WIFI_PASS);
     uint32_t t0 = millis();
     while (WiFi.status() != WL_CONNECTED) {
-      if (millis() - t0 > 8000) { Serial.println("CTRL: reconnect timed out (will retry)"); return; }
+      // Cap the inline wait so a drop pauses measurements briefly, not for 8 s. With a
+      // static IP, association is fast; if it doesn't make it, the 30 s throttle retries.
+      if (millis() - t0 > 3000) { Serial.println("CTRL: reconnect timed out (will retry)"); return; }
       delay(100);
     }
     WiFi.setSleep(false);

@@ -18,18 +18,22 @@ struct MeasurementMeta {
   float       offset1Std;   // its stddev (mV)
 };
 
-// ---- Flash storage (FFat) ----
-// storageBegin(): mount the filesystem (call once in setup). Returns false if no FS.
-// pendingBackupCount(): how many undelivered /run_*.csv files remain on flash.
-// uploadPendingBackups(): upload + delete pending files; returns how many were sent.
-bool storageBegin();
-int  pendingBackupCount();
-int  uploadPendingBackups();
+// ---- Flash storage (FFat) -- single rolling run file /lastrun.csv ----
+// storageBegin(): mount (no silent auto-format). storageEnd(): clean unmount before sleep.
+// lastRunExists(): is a non-empty last run stored?
+// dumpLastRunToSerial(): re-emit the last run over Serial (CSV, bracketed) -- WiFi-free recovery.
+// uploadLastRun(): send the last run over WiFi (true only if fully sent).
+bool storageBegin();              // mount only (no reformat -- keeps a corrupt FS readable for recovery)
+bool storageEnsureWritable();     // write-test; reformat if corrupt. Call AFTER boot recovery.
+void storageEnd();
+bool lastRunExists();
+void dumpLastRunToSerial();
+bool uploadLastRun();
 
-// ---- Streaming run log (write each block to flash as it's measured) ----
-// runFileBegin(): open /run_<stamp>.csv and write the header. Returns false if no FS.
-// runFileAppendRow(): append one measurement row and flush (durable at the block boundary).
-// runFileEnd(): flush + close at run end -> the file is the complete, durable record.
+// ---- Streaming run log (write each block to /lastrun.csv as it's measured) ----
+// runFileBegin(): open the file (overwrites the previous run) + write header.
+// runFileAppendRow(): append one row and flush (durable at the block boundary).
+// runFileEnd(): flush + close at run end.
 bool runFileBegin(const MeasurementMeta &meta);
 bool runFileAppendRow(float el, float m0, float sd0, float m1, float sd1, float t);
 void runFileEnd();

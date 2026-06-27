@@ -253,22 +253,30 @@ void drawScreen(const DateTime& now, const SunPos& sun,
   //   green "W" = connected, good signal | orange "w" = connected, weak | red "x" = down.
   // Reflects association; with modem sleep off WiFi.status() is truthful. RSSI (dBm) is
   // printed under the dot so you can watch the signal trend before a drop.
+  // top-right status dots: WiFi (upper) + flash logging (lower).
+  //   WiFi:  green "W" connected/good | orange "w" connected/weak | red "x" down; RSSI below it.
+  //   Flash: green "F" logging & last write OK | red "F" not logging / last write failed.
   int      rssi = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : 0;
-  uint16_t    dotColor;
-  const char* dotLabel;
-  if      (WiFi.status() != WL_CONNECTED) { dotColor = C_GPS_BAD; dotLabel = "x"; }
-  else if (rssi < -75)                    { dotColor = 0xFD20;    dotLabel = "w"; }
-  else                                    { dotColor = C_GPS_OK;  dotLabel = "W"; }
-  tft.fillCircle(229, 12, 9, dotColor);
+  uint16_t    wColor;
+  const char* wLabel;
+  if      (WiFi.status() != WL_CONNECTED) { wColor = C_GPS_BAD; wLabel = "x"; }
+  else if (rssi < -75)                    { wColor = 0xFD20;    wLabel = "w"; }
+  else                                    { wColor = C_GPS_OK;  wLabel = "W"; }
+  tft.fillCircle(229, 11, 8, wColor);
   tft.setTextSize(1);
   tft.setTextColor(0x0000);
-  tft.setCursor(226, 8);
-  tft.print(dotLabel);
-  // RSSI value (size 1) tucked under the dot, e.g. "-67" / "--" when down
+  tft.setCursor(226, 7);
+  tft.print(wLabel);
+  // RSSI value (size 1) between the two dots, e.g. "-67" / "--" when down
   tft.setTextColor(C_DATE);
-  tft.setCursor(212, 22);
-  if (WiFi.status() == WL_CONNECTED) { tft.print(rssi); }
-  else                               { tft.print("--"); }
+  tft.setCursor(205, 21);
+  if (WiFi.status() == WL_CONNECTED) { tft.print(rssi); } else { tft.print("--"); }
+
+  // flash-logging dot, below the WiFi one
+  tft.fillCircle(229, 36, 8, flashHealthy ? C_GPS_OK : C_GPS_BAD);
+  tft.setTextColor(0x0000);
+  tft.setCursor(226, 32);
+  tft.print("F");
   tft.setTextSize(2);
 
   // ----- coordinates -----

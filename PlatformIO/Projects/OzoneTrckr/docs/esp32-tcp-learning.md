@@ -89,3 +89,35 @@ DHCP basics (Wikipedia)
 Beej (ch. 1-6) -> arduino-esp32 WiFi examples (client + server) -> mDNS RFC intro +
 ESPmDNS example -> modem-sleep / deep-sleep guides. After Beej, re-read `datalink.cpp`
 and it reads like plain sockets code.
+
+## 6. NTP time sync (configTime / getLocalTime)
+We pull exact UTC over WiFi and set the DS3231 from it (`ntpSyncUTC`).
+
+- **arduino-esp32 `SimpleTime` example** —
+  https://github.com/espressif/arduino-esp32/blob/master/libraries/ESP32/examples/Time/SimpleTime/SimpleTime.ino
+  Uses `configTime(gmtOffset, dstOffset, server)` + `getLocalTime(&tm)` — *exactly* our two calls.
+- **Random Nerd – ESP32 NTP clock** — https://randomnerdtutorials.com/esp32-ntp-client-date-time-arduino-ide/
+  Beginner walkthrough of the same pattern.
+- **ESP-IDF system time / SNTP** —
+  https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/system/system_time.html
+  What `configTime` drives underneath (lwIP SNTP); how the sync notification works.
+- **NTP / SNTP protocol** — https://en.wikipedia.org/wiki/Network_Time_Protocol ·
+  pool servers: https://www.pool.ntp.org/en/use.html  (we use `pool.ntp.org` + `time.google.com`).
+- **C time API** — https://en.cppreference.com/w/c/chrono  (`time()`, `struct tm`, `localtime`).
+  Note: we `configTime(0,0,...)` so the epoch is **UTC**; the RTC stores UTC and the display adds the offset.
+
+## 7. Flash storage (FFat / FAT, single rolling file)
+The run streams to `/lastrun.csv` on the **FFat** (FAT) partition — open→append→close per block.
+
+| In our code | Concept to study | Reference |
+|---|---|---|
+| `FFat.begin() / open() / read / write / close` | the Arduino **FS / File** API (shared by FFat, LittleFS, SPIFFS) | arduino-esp32 FS docs (https://docs.espressif.com/projects/arduino-esp32/en/latest/api/fs.html); FFat examples (https://github.com/espressif/arduino-esp32/tree/master/libraries/FFat/examples) |
+| `FFat` on the `ffat` (subtype 0x81) partition, not LittleFS | **partition tables** — why this Adafruit board uses a FAT data partition | https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-guides/partition-tables.html |
+| open-append-close **per block**; 0-byte files; reformat-to-recover | **FAT has no journaling** -> a write/power-cut can corrupt it | FAT: https://en.wikipedia.org/wiki/File_Allocation_Table ; ESP-IDF FATFS: https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/storage/fatfs.html |
+| the FAT impl under FFat | **FatFs** (ELM-ChaN) — `f_open/f_write/f_sync/f_close`, options | http://elm-chan.org/fsw/ff/00index_e.html |
+| flash endurance across many small writes | **wear levelling** (under FFat) | https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/storage/wear-levelling.html |
+| `Preferences` (NVS) for small key/values (coords, build stamp) | **NVS** — different store, for settings not bulk data | https://docs.espressif.com/projects/arduino-esp32/en/latest/api/preferences.html |
+
+Hard-won lesson (see project memory): on this board FFat can **mount yet be unwritable** when
+corrupt — writes silently fail to 0 bytes. Per-block open/append/close commits reliably; a boot
+write-test reformats a corrupt FS; a true wipe needs a **hardware erase** (`pio run -t erase`).

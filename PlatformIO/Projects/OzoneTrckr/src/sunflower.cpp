@@ -5,8 +5,9 @@
 static int H_PIN, V_PIN;                  // horizontal / vertical servo
 static int ldrlt, ldrrt, ldrld, ldrrd;    // top-left / top-right / bottom-left / bottom-right
 
-// ---- pulse range: narrow on purpose so the servo can't ram the gear stops ----
-static const int US_MIN = 1000, US_MAX = 2000;   // 90 deg -> 1500us (centre)
+// ---- pulse range: full SG90 span (0..180deg). Gear stops are kept clear by the
+//      H_MIN/H_MAX and V_MIN/V_MAX travel limits below, not by clamping the pulse. ----
+static const int US_MIN = 500, US_MAX = 2500;   // 90 deg -> 1500us (centre)
 
 // ---- travel limits (deg) — adjust to the real rig ----
 static const float H_MIN = 10,  H_MAX = 170;
@@ -16,9 +17,9 @@ static const float V_MIN = 40,  V_MAX = 150;
 static const float START_H = 90, START_V = 150;
 
 // ---- proportional, momentum-limited step ----
-static const float KP       = 0.006f; // deg of step per ADC count of imbalance
-static const float MIN_STEP  = 0.15f;  // deg: smallest move -> keeps inching the last bit
-static const float MAX_STEP  = 0.6f;   // deg: HARD CAP -> momentum limit (no lurch on the heavy mount)
+static const float KP       = 0.003f; // deg of step per ADC count of imbalance
+static const float MIN_STEP  = 0.08f;  // deg: smallest move -> keeps inching the last bit
+static const float MAX_STEP  = 0.3f;   // deg: HARD CAP -> momentum limit (no lurch on the heavy mount)
 static const int   TOL       = 60;     // deadband (counts): hold when imbalance is below this
 static const int   STEP_MS   = 20;     // min interval between moves (settle time -> anti-hunt)
 static const int   SETTLE_N  = 12;     // consecutive in-band cycles before we call it "locked"

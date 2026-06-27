@@ -6,6 +6,7 @@
 // App state owned by the main sketch, read by the display module.
 extern double gpsLat, gpsLon;
 extern bool   hasFix, hasStoredPos, rtcSyncedGPS, gpsAwake;
+extern bool   flashHealthy;   // last block's flash write OK -> green flash dot, else red
 
 // ---------------- Display API ----------------
 void displayInit();                  // power TFT/I2C rail, init panel, clear screen

@@ -59,9 +59,9 @@
 // The run is saved to flash the instant it ends, so these windows are just "how long
 // to try the convenient WiFi delivery" -- if they expire, the data is safe on flash
 // and ships on the next power-up. Draw during retries (~0.2 A) makes even 10 min trivial.
-#define UPLOAD_WINDOW_MS     600000UL  // after a run: try WiFi delivery this long, then sleep
-#define BOOT_RECOVERY_MS     180000UL  // at boot: try this long to ship any stranded run first
-#define UPLOAD_RETRY_GAP_MS   15000UL  // wait between delivery attempts
+#define UPLOAD_WINDOW_MS     600000UL  // after a run with NO serial: grind WiFi this long
+#define UPLOAD_RETRY_GAP_MS   15000UL  // wait between WiFi delivery attempts
+#define PUTTY_GRACE_MS         6000UL  // at boot: wait this long so PuTTY can attach before the serial dump
 
 // ---------------- HARDWARE OBJECTS ----------------
 ADS131M04 adc1;        //objekt ADC-a
@@ -108,6 +108,7 @@ void IRAM_ATTR adc_ready_interrupt() {
 // so there's no in-RAM buffer -- RAM use is flat regardless of run length.
 size_t measurement_index = 0;     // rows written this run (also the stop counter)
 bool   loggingToFlash    = false; // true once the run file is open
+bool   flashHealthy      = false; // live: did the last block's flash write succeed? (TFT flash dot)
 bool   stopRequested     = false; // set by the BOOT button -> end the run early (no WiFi needed)
 
 // ---------------- MEASUREMENT-START METADATA (emitted as CSV header) ----------------
@@ -199,19 +200,26 @@ void setup() {
   }
   delay(1000);
 
-  // If a previous run is still on flash undelivered, ship it now before the new run
-  // (you're presumably near the PC at power-up). Time-boxed so it can't stall the run.
-  if (pendingBackupCount() > 0) {
-    Serial.printf("FLASH: %d unsent run(s) on flash -> delivering before new run\n",
-                  pendingBackupCount());
-    displayMessage("Resending saved run...");
-    uint32_t t0 = millis();
-    while (pendingBackupCount() > 0 && millis() - t0 < BOOT_RECOVERY_MS) {
-      if (uploadPendingBackups() == 0) delay(UPLOAD_RETRY_GAP_MS);
-    }
-    bool cleared = (pendingBackupCount() == 0);
-    displayMessage(cleared ? "Saved run sent" : "Kept on flash", cleared);
-    delay(1500);
+  // ---- Re-emit the LAST run over serial (WiFi-free recovery via USB) ----
+  // If the previous run's WiFi upload failed, plug in USB + open PuTTY now: after a
+  // grace delay, the whole last run is dumped over serial (same CSV the upload sends).
+  // This OVERWRITES nothing yet -- runFileBegin (end of setup) overwrites /lastrun.csv.
+  if (lastRunExists()) {
+    displayMessage("Last run -> recover");
+    Serial.println("==== LAST RUN: recovering over serial + WiFi ====");
+    delay(PUTTY_GRACE_MS);                  // ~6 s to attach PuTTY AND start `ncat -l 5000`
+    if (Serial) dumpLastRunToSerial();      // copy 1: serial, if a host is attached
+    bool sentWifi = uploadLastRun();        // copy 2: WiFi -> the PC's ncat listener
+    Serial.printf("Last run recovery: wifi=%s\n", sentWifi ? "sent" : "not sent");
+    displayMessage(sentWifi ? "Last run sent (WiFi)" : "Last run -> serial/flash", sentWifi);
+    delay(1200);
+  }
+
+  // Only NOW is it safe to reformat a corrupt FS -- recovery (above) has had its chance.
+  if (flashOK && !storageEnsureWritable()) {
+    flashOK = false;
+    displayMessage("FLASH UNWRITABLE", false);
+    delay(2000);
   }
 
   // BME280 on the same I2C bus (modules are usually 0x76, Adafruit boards 0x77).
@@ -280,6 +288,7 @@ void setup() {
     offsetCal0, offsetCal0Std, offsetCal1, offsetCal1Std
   };
   loggingToFlash = runFileBegin(meta);
+  flashHealthy   = loggingToFlash;   // seed the live flash-health flag for the TFT dot
   displayMessage(loggingToFlash ? "Logging to flash" : "NO FLASH-serial only", loggingToFlash);
   delay(1200);
 }
@@ -343,28 +352,32 @@ void loop() {
     runFileEnd();
     Serial.printf("---- RUN COMPLETE: %u rows on flash ----\n", (unsigned)measurement_index);
 
-    // ------- DELIVER OVER WIFI (data already safe on flash) -------
-    // Time-boxed: try UPLOAD_WINDOW_MS, then sleep. Anything not sent stays on flash
-    // and ships on the next power-up (boot recovery).
-    if (loggingToFlash && pendingBackupCount() > 0) {
+    // ------- 1) SEND OVER SERIAL FIRST (WiFi-free, guaranteed if PuTTY is attached) -------
+    // Only if THIS run actually logged -- otherwise /lastrun.csv still holds the PREVIOUS
+    // run and we must not emit it as if it were the run just completed.
+    if (loggingToFlash) {
+      if (Serial) dumpLastRunToSerial();
+
+      // ------- 2) SEND OVER WIFI to the PC's ncat listener (best effort) -------
+      // Retry the full window regardless of serial (a DTR-asserted host may not be
+      // capturing). Press BOOT to skip the wait -- the run is safe on flash + serial.
       displayMessage("Sending data...");
+      bool sent = uploadLastRun();
       uint32_t t0 = millis();
-      while (pendingBackupCount() > 0 && millis() - t0 < UPLOAD_WINDOW_MS) {
-        if (uploadPendingBackups() == 0) {
-          uint32_t leftS = (UPLOAD_WINDOW_MS - (millis() - t0)) / 1000;
-          Serial.printf("Upload failed -- data safe on flash, retrying (%lus left). "
-                        "PC listener up?  ncat -l 5000 > data.csv\n", (unsigned long)leftS);
-          char m[44];
-          snprintf(m, sizeof(m), "No PC; retry %lus", (unsigned long)leftS);
-          displayMessage(m, false);
-          delay(UPLOAD_RETRY_GAP_MS);
-        }
+      while (!sent && millis() - t0 < UPLOAD_WINDOW_MS) {
+        if (digitalRead(STOP_BTN) == LOW) { Serial.println("WiFi retry skipped (BOOT)"); break; }
+        uint32_t leftS = (UPLOAD_WINDOW_MS - (millis() - t0)) / 1000;
+        Serial.printf("WiFi upload failed -- run is on flash, retrying (%lus left, BOOT=skip). "
+                      "PC listener up?  ncat -l 5000 > data.csv\n", (unsigned long)leftS);
+        char m[44];
+        snprintf(m, sizeof(m), "No PC; retry %lus", (unsigned long)leftS);
+        displayMessage(m, false);
+        delay(UPLOAD_RETRY_GAP_MS);
+        sent = uploadLastRun();
       }
-      bool delivered = (pendingBackupCount() == 0);
-      displayMessage(delivered ? "Upload done" : "On flash; next boot", delivered);
+      displayMessage(sent ? "Upload done" : "On flash + serial", sent);
     } else {
-      // No flash this run (mount failed) -> the serial log was the only record.
-      displayMessage(loggingToFlash ? "Run on flash" : "NO FLASH-check serial", loggingToFlash);
+      displayMessage("NO FLASH-check serial", false);   // this run wasn't saved
     }
     delay(1500);
 
@@ -381,6 +394,7 @@ void loop() {
     digitalWrite(ADC_MOSI, LOW);
 
     digitalWrite(EN, LOW);
+    storageEnd();   // clean unmount so the next boot mounts cleanly (no reformat/wipe)
     Serial.println("Going into deep sleep...");
     esp_deep_sleep_start();
   }
@@ -614,7 +628,7 @@ void storeMeasurement(float el, float a, float b, float c, float d, float t) {
   if (measurement_index >= MAX_SUBLISTS)
     return;
 
-  if (loggingToFlash) runFileAppendRow(el, a, b, c, d, t);   // durable, per block
+  if (loggingToFlash) flashHealthy = runFileAppendRow(el, a, b, c, d, t);   // durable; track write health
 
   // Live serial copy in the parser's bracketed format -- an independent backup when a
   // serial host (PuTTY) is attached; harmlessly dropped when nothing is reading.

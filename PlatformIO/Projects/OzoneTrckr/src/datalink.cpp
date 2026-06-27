@@ -46,72 +46,124 @@ static void writeCsvHeader(Print& out, const MeasurementMeta &meta) {
 }
 
 // ============================================================================
-//  FLASH BACKUP (FFat)
-//  Each finished run is saved to /run_<stamp>.csv BEFORE any upload, so the data is
-//  durable the instant measuring ends. A unique per-run name means a new run never
-//  overwrites an earlier one that hasn't been delivered yet; files are removed only
-//  once successfully uploaded.
+//  FLASH STORAGE (FFat) -- single rolling file /lastrun.csv
+//  The run streams to one fixed file (no directory enumeration). It is recovered over
+//  serial (+WiFi) at the END of the run and re-dumped over serial at the NEXT boot;
+//  runFileBegin() then overwrites it. NOTE: the 960 KB partition holds only ~one large
+//  run, so a new run reclaims the space -- the previous run must be delivered or serial-
+//  recovered before the next run starts (see the ozone_trckr boot sequence).
 // ============================================================================
-static bool isBackup(const String& nameIn) {
-  String name = nameIn;
-  name.toLowerCase();   // FAT may report 8.3 names in upper case
-  return name.indexOf("run_") >= 0 && name.endsWith(".csv");
+#define LASTRUN_PATH "/lastrun.csv"   // single rolling run file -> no enumeration to get wrong
+
+// Quick write-test: a FAT can MOUNT yet be corrupt/unwritable -- writes then silently
+// fail and you get 0-byte files (exactly what bit us). Write a tiny file, read it back.
+static bool flashWriteTest() {
+  File f = FFat.open("/.wtest", "w");
+  if (!f) return false;
+  f.println("ok");
+  f.close();
+  File c = FFat.open("/.wtest", "r");
+  size_t sz = c ? c.size() : 0;
+  if (c) c.close();
+  FFat.remove("/.wtest");
+  return sz > 0;
 }
 
+// Mount ONLY -- do NOT reformat here. A corrupt-but-readable FS must stay readable long
+// enough for boot recovery (dumpLastRunToSerial) to run first; storageEnsureWritable()
+// does the destructive reformat afterwards.
 bool storageBegin() {
-  if (!FFat.begin(true)) {        // true = format if the FS partition is unformatted
-    Serial.println("FLASH: FFat mount FAILED (no backup this session)");
+  if (FFat.begin(false)) { Serial.println("FLASH: FFat mounted"); return true; }
+  Serial.println("FLASH: mount FAILED -> formatting");
+  if (FFat.begin(true)) { Serial.println("FLASH: formatted + mounted"); return true; }
+  Serial.println("FLASH: unavailable (no storage)");
+  return false;
+}
+
+// Ensure the FS is actually writable; reformat a mounted-but-corrupt FS. Call this AFTER
+// boot recovery (it can wipe /lastrun.csv). Returns false only if even a reformat won't
+// help -> a hardware erase is then needed (pio run -t erase).
+bool storageEnsureWritable() {
+  if (flashWriteTest()) return true;
+  Serial.println("FLASH: WRITE TEST FAILED (corrupt FS) -> reformatting");
+  FFat.end();
+  bool fmt = FFat.format();
+  Serial.printf("FLASH: format %s\n", fmt ? "ok" : "returned false");
+  FFat.begin(true);
+  if (!flashWriteTest()) {
+    Serial.println("FLASH: STILL unwritable -> do a hardware erase: pio run -t erase");
     return false;
   }
-  Serial.println("FLASH: FFat mounted");
+  Serial.println("FLASH: writable");
   return true;
 }
 
-// ---- Streaming run log ----
-// The run file stays open for the whole run: header at start, one row appended per
-// block with a flush at each block boundary (durable within ~1 s), closed at the end.
-// RAM use is flat regardless of run length, and a crash/power-loss loses at most the
-// last block -- the partial file is still valid CSV and is delivered on the next boot.
-static File runFile;
+// Clean unmount before deep sleep -> avoids leaving the FAT unmountable.
+void storageEnd() { FFat.end(); }
 
+// ---- Streaming run log: open-append-close PER BLOCK (no long-lived handle) ----
+// On FFat, holding one handle open + flush() produced 0-byte files; closing after each
+// block reliably commits and keeps the file size correct. RAM is flat regardless of run
+// length, and a crash loses at most the last block (each prior close is a clean commit).
 bool runFileBegin(const MeasurementMeta &meta) {
-  // /run_YYYYMMDD_HHMMSS.csv  (strip the separators from the start date/time strings)
-  char d[11] = "0000-00-00", t[9] = "00:00:00";
-  if (meta.dateStr && meta.dateStr[0]) { strncpy(d, meta.dateStr, 10); d[10] = 0; }
-  if (meta.timeStr && meta.timeStr[0]) { strncpy(t, meta.timeStr, 8);  t[8]  = 0; }
-  char path[40];
-  snprintf(path, sizeof(path), "/run_%c%c%c%c%c%c%c%c_%c%c%c%c%c%c.csv",
-           d[0],d[1],d[2],d[3],d[5],d[6],d[8],d[9], t[0],t[1],t[3],t[4],t[6],t[7]);
-
-  runFile = FFat.open(path, "w");
-  if (!runFile) { Serial.printf("FLASH: open %s failed -> NOT logging to flash\n", path); return false; }
-  writeCsvHeader(runFile, meta);
-  runFile.flush();
-  Serial.printf("FLASH: streaming run to %s\n", path);
+  File f = FFat.open(LASTRUN_PATH, "w");   // overwrite previous run (already dumped at boot)
+  if (!f) { Serial.println("FLASH: open " LASTRUN_PATH " (w) failed"); return false; }
+  writeCsvHeader(f, meta);
+  f.close();
+  // Verify the header actually landed -> catch an unwritable FS at the START, not after a run.
+  File c = FFat.open(LASTRUN_PATH, "r");
+  size_t sz = c ? c.size() : 0;
+  if (c) c.close();
+  if (sz == 0) { Serial.println("FLASH: header wrote 0 bytes -> flash NOT writable"); return false; }
+  Serial.printf("FLASH: streaming run to %s (header %u bytes)\n", LASTRUN_PATH, (unsigned)sz);
   return true;
 }
 
 bool runFileAppendRow(float el, float m0, float sd0, float m1, float sd1, float t) {
-  if (!runFile) return false;
+  File f = FFat.open(LASTRUN_PATH, "a");
+  if (!f) return false;
+  size_t before = f.size();                  // committed size before this row
   char line[112];
   snprintf(line, sizeof(line), "%.4f,%.4f,%.4f,%.4f,%.4f,%.4f", el, m0, sd0, m1, sd1, t);
-  runFile.println(line);
-  runFile.flush();            // commit at the block boundary -> durable within ~1 s
-  return true;
+  f.println(line);
+  f.close();
+  // Confirm the row actually committed (file grew). println()'s return can be nonzero
+  // even when the underlying write silently failed; the size read-back catches that, so
+  // the flashHealthy/"F" dot is truthful if flash goes bad mid-run.
+  File c = FFat.open(LASTRUN_PATH, "r");
+  size_t after = c ? c.size() : 0;
+  if (c) c.close();
+  return after > before;
 }
 
-void runFileEnd() {
-  if (runFile) { runFile.flush(); runFile.close(); }
+void runFileEnd() { /* nothing -- each block was already committed by its own close */ }
+
+// True if a non-empty last run is stored on flash.
+bool lastRunExists() {
+  File f = FFat.open(LASTRUN_PATH, "r");
+  if (!f) return false;
+  bool ok = (f.size() > 0);
+  f.close();
+  return ok;
 }
 
-int pendingBackupCount() {
-  int n = 0;
-  File root = FFat.open("/");
-  if (!root) return 0;
-  for (File f = root.openNextFile(); f; f = root.openNextFile())
-    if (isBackup(String(f.name()))) n++;
-  root.close();
-  return n;
+// Copy an open file to any Print sink (Serial or a WiFiClient). Returns bytes written.
+static size_t streamFile(File& f, Print& out) {
+  uint8_t buf[512];
+  size_t total = 0;
+  while (f.available()) { size_t n = f.read(buf, sizeof(buf)); total += out.write(buf, n); }
+  return total;
+}
+
+// Re-emit the last run to Serial verbatim (the same CSV the WiFi upload sends), bracketed
+// so it's easy to lift out of a PuTTY log. No-op if nothing is stored.
+void dumpLastRunToSerial() {
+  if (!lastRunExists()) { Serial.println("FLASH: no last run to dump"); return; }
+  File f = FFat.open(LASTRUN_PATH, "r");
+  Serial.println("---- DATA START ----");
+  streamFile(f, Serial);
+  f.close();
+  Serial.println("---- DATA END ----");
 }
 
 // ============================================================================
@@ -168,12 +220,7 @@ static bool uploadOneFile(const char* path) {
     f.close();
     return false;
   }
-  size_t sent = 0;
-  uint8_t buf[512];
-  while (f.available()) {
-    size_t n = f.read(buf, sizeof(buf));
-    sent += client.write(buf, n);
-  }
+  size_t sent = streamFile(f, client);
   f.close();
   client.flush();
   client.stop();
@@ -186,36 +233,11 @@ static bool uploadOneFile(const char* path) {
   return true;
 }
 
-// Upload every pending /run_*.csv and delete each on success. Stops at the first
-// failure (PC unreachable) so the caller can wait and retry. Returns how many landed.
-// NOTE: a plain `ncat -l 5000` (no -k) accepts only ONE connection, so if several runs
-// are pending, restart the listener between them (or use `ncat -k`, which concatenates).
-int uploadPendingBackups() {
-  String names[24];
-  int cnt = 0;
-  File root = FFat.open("/");
-  if (!root) return 0;
-  for (File f = root.openNextFile(); f && cnt < 24; f = root.openNextFile()) {
-    String name = f.name();
-    if (isBackup(name)) {
-      if (!name.startsWith("/")) name = "/" + name;
-      names[cnt++] = name;
-    }
-  }
-  root.close();
-  if (cnt == 0) return 0;
-  if (!wifiEnsure()) return 0;
-
-  int sent = 0;
-  for (int i = 0; i < cnt; i++) {
-    if (uploadOneFile(names[i].c_str())) {
-      FFat.remove(names[i]);
-      sent++;
-    } else {
-      break;   // PC unreachable -> stop; the caller will retry next round
-    }
-  }
-  return sent;
+// Send the last run over WiFi to the PC's ncat listener. One attempt; true only if the
+// whole non-empty file went out. NOT deleted on success -- it stays as the "last run"
+// (re-dumpable over serial) until the next run overwrites it.
+bool uploadLastRun() {
+  return uploadOneFile(LASTRUN_PATH);
 }
 
 // ============================================================================

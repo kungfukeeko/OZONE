@@ -1,0 +1,41 @@
+<!doctype html><meta charset="utf-8">
+<style>
+  html,body{margin:0;padding:0;background:#fff}
+  .fig{position:relative;width:1828px;height:1089px}
+  .fig img{display:block;width:1828px;height:1089px}
+  .pin{position:absolute;width:30px;height:30px;border-radius:50%;transform:translate(-50%,-50%);
+    background:transparent;border:6px solid #000;
+    box-shadow:0 0 0 2.5px #ffffff, 0 0 7px 3px rgba(0,0,0,.65)}
+  .adc{border-color:#ff8c1a}.srv{border-color:#a76bf0}.ldr{border-color:#22c55e}
+  .i2c{border-color:#2e9fe0}.gps{border-color:#12c9b8}.pwr{border-color:#ff4242}
+</style>
+<div class="fig">
+  <img src="file:///C:/Users/KSTEPA~1/AppData/Local/Temp/claude/c--Users-kstepancic-Documents-OZONE-clone/94b95599-49b3-462e-9d50-8bd32f16ead4/scratchpad/feather_s2_pinout.png">
+
+  <!-- LEFT header  (x 44.2%) -->
+  <div class="pin pwr" style="left:44.2%;top:35.0%"></div><!-- GND  analog-board ground -->
+  <div class="pin ldr" style="left:44.2%;top:37.8%"></div><!-- A0  GPIO18 -->
+  <div class="pin ldr" style="left:44.2%;top:40.7%"></div><!-- A1  GPIO17 -->
+  <div class="pin ldr" style="left:44.2%;top:43.6%"></div><!-- A2  GPIO16 -->
+  <div class="pin ldr" style="left:44.2%;top:46.5%"></div><!-- A3  GPIO15 -->
+  <div class="pin adc" style="left:44.2%;top:55.2%"></div><!-- SCK  GPIO36 -->
+  <div class="pin adc" style="left:44.2%;top:58.1%"></div><!-- MOSI GPIO35 -->
+  <div class="pin adc" style="left:44.2%;top:61.0%"></div><!-- MISO GPIO37 -->
+  <div class="pin gps" style="left:44.2%;top:63.9%"></div><!-- RX  GPIO38 GPS -->
+  <div class="pin gps" style="left:44.2%;top:66.8%"></div><!-- TX  GPIO39 GPS -->
+
+  <!-- RIGHT header (x 57.2%) -->
+  <div class="pin pwr" style="left:57.2%;top:37.8%"></div><!-- VBAT analog-board power -->
+  <div class="pin srv" style="left:57.2%;top:46.5%"></div><!-- D13 GPIO13 TRK_V -->
+  <div class="pin srv" style="left:57.2%;top:49.4%"></div><!-- D12 GPIO12 TRK_H -->
+  <div class="pin adc" style="left:57.2%;top:52.3%"></div><!-- D11 GPIO11 EN -->
+  <div class="pin adc" style="left:57.2%;top:58.1%"></div><!-- D9  GPIO9  CS -->
+  <div class="pin adc" style="left:57.2%;top:61.0%"></div><!-- D6  GPIO6  DRDY -->
+  <div class="pin srv" style="left:57.2%;top:63.9%"></div><!-- D5  GPIO5  FILTER -->
+
+  <!-- STEMMA QT connector (x 6.7%) -->
+  <div class="pin gps" style="left:6.7%;top:74.8%"></div><!-- GND     (GPS + I2C power return) -->
+  <div class="pin gps" style="left:6.7%;top:77.6%"></div><!-- VSENSOR (GPS + I2C power) -->
+  <div class="pin i2c" style="left:6.7%;top:80.5%"></div><!-- SDA GPIO3 -->
+  <div class="pin i2c" style="left:6.7%;top:83.4%"></div><!-- SCL GPIO4 -->
+</div>

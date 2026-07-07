@@ -4,11 +4,11 @@ Ovdje nam se nalaze svi bitni file-ovi za proizvesti i programirati instrument �
 
 Prioritet je:
 
-1. Ugladiti i kalibrirati suncokret 🌻
+1. Ugladiti i kalibrirati suncokret 🌻-DONE-
 2. Programirati ESP32 feature u ozone_v2.ino: izračun pozicije sunca -DONE-, slanje mjerenja preko weba -DONE- i prikaz na ekranu -DONE- 💫💽
-3. sleep-wakeup kontrola -TODO- ; ubaciti BME280 senzor 💤🔆
-4. Spojiti sunflower.ino i ozone_v2.ino 👯
-5. Dizajnirati poklopac za platformu ⛺
+3. ubaciti BME280 senzor 💤🔆 -TODO-
+4. Spojiti sunflower.ino i ozone_v2.ino 👯 -DONE-
+5. Dizajnirati poklopac za platformu ⛺ -TODO-
 6. Redizajnirati platformu za metalni servo na vertikalnoj osi 🔭 -DONE-
 
 Kako bi primili podatke preko WiFi-a na kraju mjerenja

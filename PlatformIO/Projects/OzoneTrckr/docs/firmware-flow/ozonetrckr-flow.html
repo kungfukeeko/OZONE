@@ -152,6 +152,15 @@
     padding:1px 5px;border-radius:3px;margin-right:7px}
   .fn{font-family:"Cascadia Code","Consolas",monospace;font-size:.82em;color:var(--muted)}
 
+  /* ---- NeoPixel status gallery ---- */
+  .led-group{margin-top:16px}
+  .led-group h4{margin:0 0 9px;font-size:.9rem}
+  .leds-gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(215px,1fr));gap:13px}
+  .led-chip{display:flex;gap:12px;align-items:flex-start;background:var(--card);border:1px solid var(--line);border-radius:9px;padding:11px 13px}
+  .led-bulb{width:24px;height:24px;border-radius:50%;flex:none;margin-top:2px;border:1px solid rgba(0,0,0,.2)}
+  .led-chip .txt b{display:block;font-size:.86rem;margin-bottom:1px}
+  .led-chip .txt span{font-size:.78rem;color:var(--muted);line-height:1.36}
+
   /* ---- print / PDF export ---- */
   @media print{
     @page{size:A4 portrait;margin:12mm}              /* default: portrait */
@@ -163,12 +172,12 @@
     body{background:#fff}
     .wrap{max-width:none;padding:0}
     .grid{display:block}                              /* flow prints full-width, single column */
-    aside{position:static;display:flex;flex-wrap:wrap;gap:14px;margin-top:16px}
-    aside .panel{flex:1 1 30%}
+    aside{position:static;display:flex;flex-wrap:wrap;gap:12px;margin-top:14px}
+    aside .panel{flex:1 1 22%}
     header{break-after:avoid}
     .phase-h{break-after:avoid;page-break-after:avoid}
     .step,.tft,.screen-wrap,.panel,.chan,.exit,.loop,.blocks,.fan,.pinout,.pinlegend,
-    .card,.stage,.pipe,.adc-grid,
+    .card,.stage,.pipe,.adc-grid,.led-chip,.led-group,
     .statrow,table.cmds tr,.bigsec .phase-h{break-inside:avoid;page-break-inside:avoid}
     .arrow{break-inside:avoid}
     .cmd-scroll{overflow:visible}
@@ -196,18 +205,21 @@
     /* pin table on a single portrait page */
     table.pintbl{font-size:.78rem}
     table.pintbl th,table.pintbl td{padding:4px 10px}
-    /* squeeze end-of-run + sleep + aside onto ONE page */
-    .fan{gap:9px}
-    .chan{padding:8px 11px}
-    .chan p{font-size:.78rem}
-    section.pg .step{padding:8px 13px}
-    section.phase .arrow{height:11px}
-    aside{gap:12px;margin-top:11px}
-    .panel{padding:9px 12px}
-    .panel h2{font-size:.72rem;margin-bottom:5px}
-    .statrow{margin:4px 0}
-    .statrow p{font-size:.78rem}
-    .legend li{margin:4px 0;font-size:.8rem}
+    /* squeeze end-of-run + sleep + aside (incl. NeoPixel panel) onto ONE page */
+    .fan{gap:8px}
+    .chan{padding:7px 9px}
+    .chan h4{margin-bottom:2px}
+    .chan p{font-size:.74rem;line-height:1.34}
+    section.pg .step{padding:7px 12px}
+    section.phase .arrow{height:10px}
+    aside{gap:10px;margin-top:9px}
+    .panel{padding:7px 9px}
+    .panel h2{font-size:.66rem;margin-bottom:4px}
+    .statrow{margin:3px 0}
+    .statrow p{font-size:.7rem;line-height:1.3}
+    .statrow .dot{width:15px;height:15px;font-size:.6rem}
+    .legend li{margin:3px 0;font-size:.72rem}
+    .legend .swatch{width:11px;height:11px}
   }
 </style>
 
@@ -328,6 +340,13 @@
         <h2>TFT status dots</h2>
         <div class="statrow"><span class="dot" style="background:var(--good)">W</span><p><b>WiFi:</b> green = good, orange <b>w</b> = weak, red <b>x</b> = down. RSSI shown below.</p></div>
         <div class="statrow"><span class="dot" style="background:var(--good)">F</span><p><b>Flash:</b> green = logging &amp; last write OK; red = off / write failed (live, per block).</p></div>
+      </div>
+
+      <div class="panel">
+        <h2>NeoPixel status (no-TFT build)</h2>
+        <div class="statrow"><span class="dot" style="background:#006e00"></span><p><b>Per block:</b> green = flash&nbsp;+&nbsp;WiFi OK · orange = WiFi down (on flash) · red = write failed.</p></div>
+        <div class="statrow"><span class="dot" style="background:#000096"></span><p><b>Setup:</b> blue = WiFi connecting · cyan = IP/link · green = NTP synced · orange = build-time fallback.</p></div>
+        <div class="statrow"><span class="dot" style="background:#960096"></span><p><b>Actions:</b> magenta = sending data · green/orange = upload done / kept on flash.</p></div>
       </div>
 
       <div class="panel">
@@ -490,6 +509,43 @@
         <div class="screen-cap"><b>End of run</b> — then <code>Upload done</code> (green) or <code>On flash + serial</code>; the panel blanks (<code>displayOff()</code>) before deep sleep.</div>
       </div>
 
+    </div>
+  </section>
+
+  <!-- ============ NEOPIXEL STATUS ============ -->
+  <section class="bigsec">
+    <div class="phase-h"><span class="tag" style="background:#1d232e">NeoPixel</span>
+      <span class="note">no-TFT build — what the single status LED shows, in run order</span></div>
+
+    <div class="led-group">
+      <h4>Setup checkpoints <span style="font-weight:400;color:var(--muted);font-size:.82rem">— each a short blink</span></h4>
+      <div class="leds-gallery">
+        <div class="led-chip"><span class="led-bulb" style="background:#bfbfbf;box-shadow:0 0 9px #cfcfcf"></span><span class="txt"><b>Booting</b><span>dim white — powered on, cold-booting the ADC.</span></span></div>
+        <div class="led-chip"><span class="led-bulb" style="background:#12b312;box-shadow:0 0 10px #12b312"></span><span class="txt"><b>Flash OK</b><span>green ×2 — FFat mounted (red ×3 = mount/format failed).</span></span></div>
+        <div class="led-chip"><span class="led-bulb" style="background:#2e6cff;box-shadow:0 0 10px #2e6cff"></span><span class="txt"><b>WiFi connecting</b><span>solid blue — joining the network.</span></span></div>
+        <div class="led-chip"><span class="led-bulb" style="background:#17b8b8;box-shadow:0 0 10px #17b8b8"></span><span class="txt"><b>WiFi + IP</b><span>cyan ×2 — connected, address acquired (red ×3 = no WiFi).</span></span></div>
+        <div class="led-chip"><span class="led-bulb" style="background:#16b35a;box-shadow:0 0 10px #16b35a"></span><span class="txt"><b>Clock synced</b><span>green-teal ×2 — time set from NTP.</span></span></div>
+        <div class="led-chip"><span class="led-bulb" style="background:#e07b1a;box-shadow:0 0 10px #e07b1a"></span><span class="txt"><b>Clock fallback</b><span>orange ×3 — NTP failed → build-time clock.</span></span></div>
+        <div class="led-chip"><span class="led-bulb" style="background:#12b312;box-shadow:0 0 10px #12b312"></span><span class="txt"><b>Logging</b><span>green ×2 — run file open on flash (red = serial only).</span></span></div>
+      </div>
+    </div>
+
+    <div class="led-group">
+      <h4>During the run <span style="font-weight:400;color:var(--muted);font-size:.82rem">— one blink per block</span></h4>
+      <div class="leds-gallery">
+        <div class="led-chip"><span class="led-bulb" style="background:#12b312;box-shadow:0 0 10px #12b312"></span><span class="txt"><b>All good</b><span>green — flash write OK and WiFi up.</span></span></div>
+        <div class="led-chip"><span class="led-bulb" style="background:#e07b1a;box-shadow:0 0 10px #e07b1a"></span><span class="txt"><b>WiFi down</b><span>orange — link lost, but the block is safely on flash.</span></span></div>
+        <div class="led-chip"><span class="led-bulb" style="background:#e23b3b;box-shadow:0 0 10px #e23b3b"></span><span class="txt"><b>Flash failed</b><span>red — the block's flash write did not commit.</span></span></div>
+      </div>
+    </div>
+
+    <div class="led-group">
+      <h4>Delivery <span style="font-weight:400;color:var(--muted);font-size:.82rem">— end of run</span></h4>
+      <div class="leds-gallery">
+        <div class="led-chip"><span class="led-bulb" style="background:#c026c0;box-shadow:0 0 10px #c026c0"></span><span class="txt"><b>Sending data</b><span>magenta — uploading the run over WiFi (blinks per retry).</span></span></div>
+        <div class="led-chip"><span class="led-bulb" style="background:#12b312;box-shadow:0 0 10px #12b312"></span><span class="txt"><b>Upload done</b><span>green ×3 — the PC received the file.</span></span></div>
+        <div class="led-chip"><span class="led-bulb" style="background:#e07b1a;box-shadow:0 0 10px #e07b1a"></span><span class="txt"><b>Kept on flash</b><span>orange ×3 — no PC listener; data safe on flash + serial.</span></span></div>
+      </div>
     </div>
   </section>
 
